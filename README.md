@@ -2,6 +2,8 @@
 
 My useful dsh-plugins. Without link, means the plugin is still in developing locally.
 
+[中文](README.zh.md)
+
 ## dsh-plugins (TypeScript/JavaScript)
 
 - [dsh-mloader](https://github.com/Mooling0602/dsh-mloader)
