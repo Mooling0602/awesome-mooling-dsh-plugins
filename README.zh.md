@@ -19,6 +19,7 @@
 > 已在 GitHub release 压缩包和 dshmarket 上发布稳定版本。开发用途的 GitHub 源码需要本地编译。
 
 - [dsh-bili-danmaku-overlay](https://github.com/Mooling0602/dsh-bili-danmaku-overlay)（[中文](https://github.com/Mooling0602/dsh-bili-danmaku-overlay/blob/main/README.zh.md)）
+> 开发中，已提供构建好的 JS 产物。
 - dsh-user-repl
 
 ## dsh-mloader-plugins

@@ -19,6 +19,7 @@ My useful dsh-plugins. Without link, means the plugin is still in developing loc
 > Stable release in GitHub release tarball and dshmarket. For develop, GitHub source need local compliling.
 
 - [dsh-bili-danmaku-overlay](https://github.com/Mooling0602/dsh-bili-danmaku-overlay)
+> Developing... Built JS assets provided.
 - dsh-user-repl
 
 ## dsh-mloader-plugins
