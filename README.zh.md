@@ -18,7 +18,7 @@
 - [dsh-web-file-uploader](https://github.com/Mooling0602/dsh-web-file-uploader)（[中文](https://github.com/Mooling0602/dsh-web-file-uploader/blob/main/README_zh_CN.md)）
 > 已在 GitHub release 压缩包和 dshmarket 上发布稳定版本。开发用途的 GitHub 源码需要本地编译。
 
-- dsh-bili-danmaku-overlay
+- [dsh-bili-danmaku-overlay](https://github.com/Mooling0602/dsh-bili-danmaku-overlay)（[中文](https://github.com/Mooling0602/dsh-bili-danmaku-overlay/blob/main/README.zh.md)）
 - dsh-user-repl
 
 ## dsh-mloader-plugins

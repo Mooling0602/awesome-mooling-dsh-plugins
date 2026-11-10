@@ -18,7 +18,7 @@ My useful dsh-plugins. Without link, means the plugin is still in developing loc
 - [dsh-web-file-uploader](https://github.com/Mooling0602/dsh-web-file-uploader)
 > Stable release in GitHub release tarball and dshmarket. For develop, GitHub source need local compliling.
 
-- dsh-bili-danmaku-overlay
+- [dsh-bili-danmaku-overlay](https://github.com/Mooling0602/dsh-bili-danmaku-overlay)
 - dsh-user-repl
 
 ## dsh-mloader-plugins
