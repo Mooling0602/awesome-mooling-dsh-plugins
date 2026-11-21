@@ -69,11 +69,16 @@ export function latestOf(packument: Resolved): Readonly<Record<string, unknown>>
   return version === undefined ? undefined : version
 }
 
-/** Whether a name is one this worker hosts, and therefore never needs the allow list. */
+/** Whether a name is one this worker answers for directly, and therefore never needs the allow list. */
 export type Hosts = (name: string) => boolean
 
-/** Reads the dependency names a hosted package declares, without going upstream for it. */
-export type OwnDependencies = (name: string) => Promise<readonly string[]>
+/**
+ * Reads the dependency names a package declares from local data, without going upstream.
+ *
+ * Returns `undefined` when the package's manifest is not available locally, which is the case for a package this worker
+ * only proxies. The caller then resolves it over the network instead.
+ */
+export type OwnDependencies = (name: string) => Promise<readonly string[] | undefined>
 
 /**
  * Fetch one package's packument from the upstream registry, or nothing when it does not exist there.
@@ -105,14 +110,14 @@ async function resolve(name: string, upstream: string): Promise<Readonly<Record<
  * stops after WALK_LIMIT packages, and it checks the KV cache before resolving anything, so a graph walked once is cheap
  * to walk again. A denial is cached too, so a client cannot make the worker re-walk the graph by repeating a request.
  *
- * A hosted package's own dependencies come from its hosted packument rather than from upstream, where the package does
- * not exist; only the dependencies of a dependency are resolved over the network.
+ * A package this worker only proxies — a plugin published to npm — is a root as well, because the index points at this
+ * domain for those too. Its own dependencies are not in KV, so they are resolved upstream like any other.
  * @param name - the package the client asked for.
  * @param kv - the namespace.
  * @param upstream - registry base URL.
- * @param hosts - decides whether a name is hosted, which needs no allowance.
- * @param own - reads a hosted package's declared dependencies from KV.
- * @param roots - the hosted packages whose dependencies are reachable.
+ * @param hosts - decides whether a name is answered for, which needs no allowance.
+ * @param own - reads a package's declared dependencies from local data, or `undefined` when it holds none.
+ * @param roots - the packages whose dependencies are reachable.
  * @returns whether the request may be proxied.
  */
 export async function allowed(
@@ -136,7 +141,9 @@ export async function allowed(
   while (queue.length > 0 && visited < WALK_LIMIT) {
     const current = queue.shift() as string
     visited += 1
-    const dependencies = hosts(current) ? await own(current) : dependenciesOf(await resolve(current, upstream))
+    const local = await own(current)
+    // A package whose manifest is not held locally is resolved upstream; one that is skips the request entirely.
+    const dependencies = local ?? dependenciesOf(await resolve(current, upstream))
     for (const dependency of dependencies) {
       if (dependency === name) {
         await kv.put(`${ALLOW_PREFIX}${name}`, '1')

@@ -78,9 +78,14 @@ test('托管包的直接依赖被允许', async () => {
   const { restore } = serve({})
   try {
     const store = kv()
-    const result = await allowed('cordis', store, 'https://up.test', name => name === 'dsh-x', async () => ['cordis'], [
-      'dsh-x',
-    ])
+    const result = await allowed(
+      'cordis',
+      store,
+      'https://up.test',
+      name => name === 'dsh-x',
+      async (name: string) => (name === 'dsh-x' ? ['cordis'] : undefined),
+      ['dsh-x'],
+    )
     assert.equal(result, true)
     assert.equal(await store.get(`${ALLOW_PREFIX}cordis`), '1')
   } finally {
@@ -94,7 +99,9 @@ test('传递依赖被允许', async () => {
   try {
     const store = kv()
     const hosts = (name: string): boolean => name === 'dsh-x'
-    const own = async (): Promise<readonly string[]> => ['cordis']
+    // Only the hosted root has a local manifest; `cordis` is not held here, so its dependencies come from upstream.
+    const own = async (name: string): Promise<readonly string[] | undefined> =>
+      name === 'dsh-x' ? ['cordis'] : undefined
     const result = await allowed('deep-dep', store, 'https://up.test', hosts, own, ['dsh-x'])
     assert.equal(result, true)
     assert.deepEqual(asked, ['cordis'])
@@ -108,7 +115,7 @@ test('无关的包被拒绝，且拒绝被记住', async () => {
   try {
     const store = kv()
     const hosts = (name: string): boolean => name === 'dsh-x'
-    const own = async (): Promise<readonly string[]> => []
+    const own = async (): Promise<readonly string[] | undefined> => []
     const first = await allowed('random-package', store, 'https://up.test', hosts, own, ['dsh-x'])
     assert.equal(first, false)
     assert.equal(await store.get(`${DENY_PREFIX}random-package`), '1')
@@ -140,7 +147,8 @@ test('依赖环不会让遍历卡住', async () => {
   try {
     const store = kv()
     const hosts = (name: string): boolean => name === 'dsh-x'
-    const own = async (): Promise<readonly string[]> => ['a']
+    const own = async (name: string): Promise<readonly string[] | undefined> =>
+      name === 'dsh-x' ? ['a'] : undefined
     const result = await allowed('unrelated', store, 'https://up.test', hosts, own, ['dsh-x'])
     assert.equal(result, false)
   } finally {
@@ -153,10 +161,43 @@ test('上游 404 视为无法解析而非允许', async () => {
   try {
     const store = kv()
     const hosts = (name: string): boolean => name === 'dsh-x'
-    const own = async (): Promise<readonly string[]> => ['missing-dep']
+    const own = async (name: string): Promise<readonly string[] | undefined> =>
+      name === 'dsh-x' ? ['missing-dep'] : undefined
     const result = await allowed('missing-dep', store, 'https://up.test', hosts, own, ['dsh-x'])
     // The dependency name matches what was asked for, so it is allowed even though it cannot be resolved.
     assert.equal(result, true)
+  } finally {
+    restore()
+  }
+})
+
+test('带本地清单的根包不查询上游', async () => {
+  const { asked, restore } = serve({})
+  try {
+    const store = kv()
+    const hosts = (name: string): boolean => name === 'dsh-x'
+    const own = async (name: string): Promise<readonly string[] | undefined> =>
+      name === 'dsh-x' ? ['cordis'] : undefined
+    const result = await allowed('cordis', store, 'https://up.test', hosts, own, ['dsh-x'])
+    assert.equal(result, true)
+    // A converted package's manifest lives in KV, so the walk must not ask upstream for a package npm does not have.
+    assert.deepEqual(asked, [])
+  } finally {
+    restore()
+  }
+})
+
+test('npm 发布的根包从上游展开依赖', async () => {
+  // A plugin published to npm has no local manifest, so the walk has to ask upstream for its dependencies.
+  const { asked, restore } = serve({ 'dsh-on-npm': ['dep-of-npm-plugin'] })
+  try {
+    const store = kv()
+    const hosts = (name: string): boolean => name === 'dsh-x'
+    const own = async (name: string): Promise<readonly string[] | undefined> =>
+      name === 'dsh-x' ? [] : undefined
+    const result = await allowed('dep-of-npm-plugin', store, 'https://up.test', hosts, own, ['dsh-x', 'dsh-on-npm'])
+    assert.equal(result, true)
+    assert.deepEqual(asked, ['dsh-on-npm'])
   } finally {
     restore()
   }

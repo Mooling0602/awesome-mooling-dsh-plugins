@@ -137,7 +137,13 @@ export async function handle(request: Request, env: Env): Promise<Response> {
     // though, because that would make this domain a free public npm mirror.
     const hosted = await hostedNames(env.REGISTRY)
     const hosts: Hosts = name => hosted.has(name)
-    const own: OwnDependencies = async name => dependenciesOf(latestOf((await lookup(env.REGISTRY, name))?.packument as Resolved))
+    // Only a converted package has a packument in KV, so an npm-published plugin yields `undefined` and the walk asks
+    // upstream for its dependencies instead.
+    const own: OwnDependencies = async name => {
+      const entry = await lookup(env.REGISTRY, name)
+      if (entry === undefined) return undefined
+      return dependenciesOf(latestOf(entry.packument as Resolved))
+    }
     if (!(await allowed(found.name, env.REGISTRY, upstream, hosts, own, [...hosted]))) return denied(found.name)
     return proxy(request, upstream)
   }

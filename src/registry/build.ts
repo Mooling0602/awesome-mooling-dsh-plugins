@@ -184,8 +184,13 @@ export async function buildEntry(
 export async function buildRegistry(
   root: string = ROOT,
   warn: (message: string) => void = message => console.warn(`warning: ${message}`),
-): Promise<{ manifest: RegistryManifest; packuments: Map<string, Packument> }> {
-  const plugins = (await readPlugins(root)).filter(plugin => needsConversion(plugin))
+): Promise<{ manifest: RegistryManifest; packuments: Map<string, Packument>; proxied: string[] }> {
+  const all = await readPlugins(root)
+  const plugins = all.filter(plugin => needsConversion(plugin))
+  // A plugin published to npm is not converted, but a client still reaches it through this worker's domain: the index
+  // points npm-source entries at the worker too, and the worker proxies them upstream. Without an allowance the worker
+  // would refuse them and the index build would report the plugin as a failed source.
+  const proxied = all.filter(plugin => !needsConversion(plugin)).map(plugin => plugin.package)
   const packuments = new Map<string, Packument>()
   const packages: Record<string, ManifestEntry> = {}
   for (const plugin of plugins) {
@@ -195,7 +200,7 @@ export async function buildRegistry(
     packuments.set(plugin.package, built.packument)
     packages[plugin.package] = built.entry
   }
-  return { manifest: { builtAt: new Date().toISOString(), packages }, packuments }
+  return { manifest: { builtAt: new Date().toISOString(), packages }, packuments, proxied }
 }
 
 /**
@@ -204,23 +209,27 @@ export async function buildRegistry(
  * Each key is a package name and each value is the packument plus the tarball location of every version, which is
  * exactly what `route()` expects through its lookup callback.
  *
- * One extra record lists the hosted names under HOSTED_KEY. The worker needs that list to decide whether a package it
- * does not host may still be proxied: only packages reachable from a hosted one are, so the walk has to start somewhere
- * without paying a KV `list` on every request.
+ * One extra record lists the package names the worker may answer for, under HOSTED_KEY. It holds the hosted names and
+ * the npm-published plugin names together: the worker needs the list to decide whether a package it does not host may
+ * still be proxied, and for that purpose both are roots of the same dependency walk. Without the list the decision would
+ * need a KV `list` on every request, because a KV key is otherwise indistinguishable from the package it describes.
  * @param manifest - the built manifest.
  * @param packuments - the built packuments.
- * @returns one record per hosted package, plus the hosted-name list.
+ * @param proxied - npm-published plugin packages the worker should proxy rather than host.
+ * @returns one record per hosted package, plus the name list.
  */
 export function kvRecords(
   manifest: RegistryManifest,
   packuments: ReadonlyMap<string, Packument>,
+  proxied: readonly string[] = [],
 ): { key: string; value: string }[] {
   const records = Object.entries(manifest.packages).map(([name, entry]) => {
     const tarballs: Record<string, { tarball: string }> = {}
     for (const [version, url] of Object.entries(entry.versions)) tarballs[version] = { tarball: url }
     return { key: name, value: JSON.stringify({ packument: packuments.get(name), tarballs }) }
   })
-  records.push({ key: HOSTED_KEY, value: JSON.stringify(Object.keys(manifest.packages)) })
+  const names = [...new Set([...Object.keys(manifest.packages), ...proxied])]
+  records.push({ key: HOSTED_KEY, value: JSON.stringify(names) })
   return records
 }
 
@@ -233,7 +242,7 @@ export function kvRecords(
  * @returns how many packages were written.
  */
 export async function writeRegistry(root: string = ROOT): Promise<number> {
-  const { manifest, packuments } = await buildRegistry(root)
+  const { manifest, packuments, proxied } = await buildRegistry(root)
   const dist = join(root, 'dists', 'registry')
   await mkdir(join(dist, 'packuments'), { recursive: true })
   for (const [name, packument] of packuments) {
@@ -242,7 +251,7 @@ export async function writeRegistry(root: string = ROOT): Promise<number> {
   await writeFile(join(dist, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
   // Consumed by `wrangler kv bulk put`; keeping it beside the packuments means the deployed KV and the checked-in
   // output can never describe different versions.
-  await writeFile(join(dist, 'kv.json'), `${JSON.stringify(kvRecords(manifest, packuments), null, 2)}\n`, 'utf8')
+  await writeFile(join(dist, 'kv.json'), `${JSON.stringify(kvRecords(manifest, packuments, proxied), null, 2)}\n`, 'utf8')
   return packuments.size
 }
 

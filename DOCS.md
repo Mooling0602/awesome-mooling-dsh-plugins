@@ -50,7 +50,7 @@ A plugin distributed as a GitHub release tarball, however, usually has not publi
 
 The second point is not optional. The `peerDependencies` of a converted package are still ordinary npm packages, so a worker that answered only for the packages it hosts could not complete dependency resolution during an install.
 
-That proxying is scoped, though: only packages reachable from a hosted one are allowed, meaning its direct dependencies and their dependencies in turn. Proxying any name on request would turn this domain into a free public npm mirror, where anyone could install any package at this project's expense. The decision lives in `src/allow.ts` and is cached per package in KV: a grant is permanent, while a refusal expires after a day, so a plugin that gains a new dependency later is not blocked by a stale record.
+That proxying is scoped, though: only two kinds of package are allowed, the plugins this repository indexes and anything reachable from them, meaning their direct dependencies and their dependencies in turn. Proxying any name on request would turn this domain into a free public npm mirror, where anyone could install any package at this project's expense. The decision lives in `src/allow.ts` and is cached per package in KV: a grant is permanent, while a refusal expires after a day, so a plugin that gains a new dependency later is not blocked by a stale record.
 
 ### How data flows
 
