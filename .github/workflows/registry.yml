@@ -70,6 +70,20 @@ jobs:
           sed -i "s|id = \"KV_NAMESPACE_ID\"|id = \"$KV_NAMESPACE_ID\"|" wrangler.toml
           grep -n 'id = ' wrangler.toml
 
+      # The worker caches each proxy decision in KV. Those records are derived data, and a record written by an older
+      # worker can outlive the bug that caused it: a past version refused packages a real install needed, and the
+      # refusals had no expiry. Rebuilding the cache on every deploy makes that self-healing instead of a manual repair.
+      # The listing is filtered by `--cache-plan`, so only decision records are removed and the packuments stay.
+      - name: Drop cached proxy decisions
+        run: |
+          pnpm exec wrangler kv key list --binding REGISTRY --remote > "$RUNNER_TEMP/kv-keys.json"
+          node src/registry/build.ts --cache-plan < "$RUNNER_TEMP/kv-keys.json"
+          if [ "$(node -e 'console.log(require("./dists/registry/cache-delete.json").length)')" -gt 0 ]; then
+            pnpm exec wrangler kv bulk delete dists/registry/cache-delete.json --binding REGISTRY --remote --force
+          else
+            echo 'no cached decisions to drop'
+          fi
+
       # Uploaded before the deploy: the packuments must be in place by the time the new worker starts answering, or a
       # client resolving a hosted package mid-deploy records a 404 in its own lockfile.
       - name: Upload packuments to KV

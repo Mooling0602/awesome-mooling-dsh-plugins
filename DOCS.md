@@ -52,6 +52,8 @@ The second point is not optional. The `peerDependencies` of a converted package 
 
 That proxying is scoped, though: only two kinds of package are allowed, the plugins this repository indexes and anything reachable from them, meaning their direct dependencies and their dependencies in turn. Proxying any name on request would turn this domain into a free public npm mirror, where anyone could install any package at this project's expense. The decision lives in `src/allow.ts` and is cached per package in KV: a grant is permanent, while a refusal expires after a day, so a plugin that gains a new dependency later is not blocked by a stale record.
 
+Those cached records are derived data, so every deploy drops and rebuilds them (`.github/workflows/registry.yml` runs `node src/registry/build.ts --cache-plan`). The reason is a past failure: an earlier version read dependencies from the version tagged latest only, refused packages a real install needed, and stored those refusals without an expiry, so they outlived the fix and kept breaking installs until they were cleared by hand. Rebuilding makes that class of mistake self-healing, at the cost of one slow first install after each release: measured against the deployed worker, a cold install of the slowest hosted plugin took about thirty seconds against seven seconds warm.
+
 ### How data flows
 
 Each CI run does the following.

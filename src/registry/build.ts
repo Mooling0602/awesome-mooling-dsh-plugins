@@ -31,6 +31,7 @@ import { downloadableVersions, repositoryPath, type Release } from '../releases.
 import { integrityOf, type Integrity } from '../integrity.ts'
 import { buildPackument, type Packument, type TarballVersion } from '../packument.ts'
 import { HOSTED_KEY } from '../routes.ts'
+import { cacheKeys } from './cache.ts'
 
 /** Repository root, one level above `src/`. */
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -255,6 +256,26 @@ export async function writeRegistry(root: string = ROOT): Promise<number> {
   return packuments.size
 }
 
+/** Read standard input to end, for a listing piped in by the deploy step. */
+async function readStdin(): Promise<string> {
+  const chunks: Buffer[] = []
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer)
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+/**
+ * Read a namespace listing out of the stream wrangler wrote.
+ * @param raw - everything the listing command printed.
+ * @returns every entry the listing holds.
+ * @throws when the stream carries no JSON array, which means the command failed rather than returned an empty page.
+ */
+function parseListing(raw: string): { name?: unknown }[] {
+  const start = raw.indexOf('[')
+  const end = raw.lastIndexOf(']')
+  if (start === -1 || end < start) throw new Error('the key listing held no JSON array')
+  return JSON.parse(raw.slice(start, end + 1)) as { name?: unknown }[]
+}
+
 /** Whether this module is the entry point. */
 function invokedDirectly(): boolean {
   const entry = process.argv[1]
@@ -264,7 +285,18 @@ function invokedDirectly(): boolean {
 
 if (invokedDirectly()) {
   const check = process.argv.includes('--check')
-  if (check) {
+  const plan = process.argv.includes('--cache-plan')
+  if (plan) {
+    // Read the namespace listing this deploy is about to write over, so the caller deletes exactly the stale records and
+    // nothing else. The listing comes from stdin because only the deploy step can talk to Cloudflare.
+    //
+    // The listing is sliced out of the stream rather than parsed whole: wrangler writes diagnostics to stdout on some
+    // versions, and a run that printed a warning before the array would otherwise fail the deploy outright.
+    const listing = parseListing(await readStdin())
+    const keys = cacheKeys(listing.map(entry => String(entry.name)))
+    await writeFile(join(OUTPUT, 'cache-delete.json'), `${JSON.stringify(keys, null, 2)}\n`, 'utf8')
+    console.log(`dists/registry/cache-delete.json lists ${keys.length} stale record(s)`)
+  } else if (check) {
     let manifest: RegistryManifest
     try {
       manifest = JSON.parse(await readFile(join(OUTPUT, 'manifest.json'), 'utf8')) as RegistryManifest
