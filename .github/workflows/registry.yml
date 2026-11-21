@@ -83,6 +83,7 @@ jobs:
       # The listing is filtered by `--cache-plan`, so only decision records are removed and the packuments stay.
       - name: Drop cached proxy decisions
         if: github.event_name == 'workflow_dispatch'
+        continue-on-error: true
         run: |
           pnpm exec wrangler kv key list --binding REGISTRY --remote > "$RUNNER_TEMP/kv-keys.json"
           node src/registry/build.ts --cache-plan < "$RUNNER_TEMP/kv-keys.json"
@@ -92,13 +93,27 @@ jobs:
             echo 'no cached decisions to drop'
           fi
 
-      # Uploaded before the deploy: the packuments must be in place by the time the new worker starts answering, or a
-      # client resolving a hosted package mid-deploy records a 404 in its own lockfile.
-      - name: Upload packuments to KV
-        run: pnpm exec wrangler kv bulk put dists/registry/kv.json --binding REGISTRY --remote
-
+      # The worker goes out first, then its data.
+      #
+      # Uploading first was the original order, so that a new worker never answered before the packuments it serves were
+      # in place. A day of deploys against the free plan exhausted the daily KV write quota, though, and because the
+      # upload came first, no worker change could ship at all, including a fix that had nothing to do with KV. A worker
+      # whose data is one release stale is a working worker: the previous packuments are still in KV and still resolve.
+      # A worker that cannot deploy is not.
       - name: Deploy worker
         run: pnpm exec wrangler deploy
+
+      # A failure here does not fail the run, for the same reason. The quota resets on its own, so the response is to
+      # keep serving what KV already holds and upload again later, not to abandon a release that is already live.
+      - name: Upload packuments to KV
+        id: upload
+        continue-on-error: true
+        run: pnpm exec wrangler kv bulk put dists/registry/kv.json --binding REGISTRY --remote
+
+      - name: Report stale registry data
+        if: steps.upload.outcome == 'failure'
+        run: |
+          echo '::warning title=Registry data is stale::The packument upload failed, most likely because the free plan daily KV write quota is exhausted. The worker still deployed. Existing plugins keep resolving from the packuments already in KV, but a version or plugin published in this run is not served until a later run uploads successfully. Re-run this workflow once the quota resets.'
 
   index:
     name: Build index
