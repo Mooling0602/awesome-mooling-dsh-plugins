@@ -2,4 +2,7 @@ id: dsh-bili-danmaku-overlay
 package: dsh-bili-danmaku-overlay
 source: github
 repo: https://github.com/Mooling0602/dsh-bili-danmaku-overlay
+readme:
+  zh_CN: README.md
+  en_US: README.en.md
 dispatch-type: source

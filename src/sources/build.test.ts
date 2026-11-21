@@ -16,9 +16,10 @@ async function fixture(plugins: Record<string, string>): Promise<string> {
   return root
 }
 
-const NPM = (id: string) => `id: ${id}\npackage: ${id}\nsource: npm\nrepo: https://github.com/Mooling0602/${id}\ndispatch-type: npmjs\n`
-const TARBALL = (id: string) => `id: ${id}\npackage: ${id}\nsource: github\nrepo: https://github.com/Mooling0602/${id}\ndispatch-type: tarball\n`
-const SOURCE = (id: string) => `id: ${id}\npackage: ${id}\nsource: github\nrepo: https://github.com/Mooling0602/${id}\ndispatch-type: source\n`
+const README = 'readme:\n  zh_CN: README.zh.md\n  en_US: README.md\n'
+const NPM = (id: string) => `id: ${id}\npackage: ${id}\nsource: npm\nrepo: https://github.com/Mooling0602/${id}\n${README}dispatch-type: npmjs\n`
+const TARBALL = (id: string) => `id: ${id}\npackage: ${id}\nsource: github\nrepo: https://github.com/Mooling0602/${id}\n${README}dispatch-type: tarball\n`
+const SOURCE = (id: string) => `id: ${id}\npackage: ${id}\nsource: github\nrepo: https://github.com/Mooling0602/${id}\n${README}dispatch-type: source\n`
 
 test('buildSources 把 npmjs 与 tarball 都写成包名', async () => {
   const root = await fixture({

@@ -2,4 +2,7 @@ id: dsh-better-plugin-updater
 package: dsh-better-plugin-updater
 source: npm
 repo: https://github.com/Mooling0602/dsh-better-plugin-updater
+readme:
+  zh_CN: README.zh.md
+  en_US: README.md
 dispatch-type: npmjs

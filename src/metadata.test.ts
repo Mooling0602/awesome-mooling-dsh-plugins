@@ -7,6 +7,9 @@ const GOOD = [
   'package: dsh-mloader',
   'source: github',
   'repo: https://github.com/Mooling0602/dsh-mloader',
+  'readme:',
+  '  zh_CN: README.zh.md',
+  '  en_US: README.md',
   'dispatch-type: source',
 ].join('\n')
 
@@ -30,8 +33,49 @@ test('parsePluginYml 接受五字段文件', () => {
     package: 'dsh-mloader',
     source: 'github',
     repo: 'https://github.com/Mooling0602/dsh-mloader',
+    readme: { zh_CN: 'README.zh.md', en_US: 'README.md' },
     dispatchType: 'source',
   })
+})
+
+test('parsePluginYml 把 readme 读成语言映射', () => {
+  const plugin = parsePluginYml(GOOD, 'p.yml')
+  assert.deepEqual(plugin.readme, { zh_CN: 'README.zh.md', en_US: 'README.md' })
+})
+
+test('parsePluginYml 接受 readme 的完整链接', () => {
+  const text = GOOD.replace('  zh_CN: README.zh.md', '  zh_CN: https://example.test/README.zh.md')
+  assert.equal(parsePluginYml(text, 'p.yml').readme.zh_CN, 'https://example.test/README.zh.md')
+})
+
+test('parsePluginYml 接受只列一种语言的 readme', () => {
+  const text = GOOD.replace('  en_US: README.md\n', '')
+  assert.deepEqual(parsePluginYml(text, 'p.yml').readme, { zh_CN: 'README.zh.md' })
+})
+
+test('parsePluginYml 拒绝不支持的 readme 语言', () => {
+  const text = GOOD.replace('  en_US: README.md', '  ja_JP: README.ja.md')
+  assert.throws(() => parsePluginYml(text, 'p.yml'), /readme language "ja_JP" is not supported yet/u)
+})
+
+test('parsePluginYml 拒绝重复的 readme 语言', () => {
+  const text = GOOD.replace('  en_US: README.md', '  zh_CN: README.other.md')
+  assert.throws(() => parsePluginYml(text, 'p.yml'), /duplicate readme language "zh_CN"/u)
+})
+
+test('parsePluginYml 拒绝不是映射的 readme', () => {
+  const text = GOOD.replace('readme:\n  zh_CN: README.zh.md\n  en_US: README.md', 'readme: README.md')
+  assert.throws(() => parsePluginYml(text, 'p.yml'), /field "readme" must map a language/u)
+})
+
+test('parsePluginYml 拒绝空路径的 readme 条目', () => {
+  const text = GOOD.replace('  zh_CN: README.zh.md', '  zh_CN:')
+  assert.throws(() => parsePluginYml(text, 'p.yml'), /readme "zh_CN" must be a repository-relative path/u)
+})
+
+test('parsePluginYml 保留 readme 的语言顺序', () => {
+  const text = GOOD.replace('  zh_CN: README.zh.md\n  en_US: README.md', '  en_US: README.md\n  zh_CN: README.zh.md')
+  assert.deepEqual(Object.keys(parsePluginYml(text, 'p.yml').readme), ['en_US', 'zh_CN'])
 })
 
 test('parsePluginYml 接受三种 dispatch-type', () => {
@@ -110,7 +154,12 @@ test('parsePluginYml 拒绝缺少字段', () => {
     'source: github',
     'repo: https://github.com/Mooling0602/dsh-mloader',
   ].join('\n')
-  assert.throws(() => parsePluginYml(text, 'p.yml'), /missing field\(s\) dispatch-type/u)
+  assert.throws(() => parsePluginYml(text, 'p.yml'), /missing field\(s\) readme, dispatch-type/u)
+})
+
+test('parsePluginYml 单独点名缺少的 readme', () => {
+  const text = GOOD.replace('readme:\n  zh_CN: README.zh.md\n  en_US: README.md\n', '')
+  assert.throws(() => parsePluginYml(text, 'p.yml'), /missing field\(s\) readme$/u)
 })
 
 test('parsePluginYml 拒绝空值', () => {
@@ -133,7 +182,7 @@ test('parsePluginYml 拒绝字段顺序错误', () => {
 })
 
 test('parsePluginYml 报错带行号', () => {
-  assert.throws(() => parsePluginYml(`${GOOD}\nbogus: 1\n`, 'p.yml'), /p\.yml:6/u)
+  assert.throws(() => parsePluginYml(`${GOOD}\nbogus: 1\n`, 'p.yml'), /p\.yml:9/u)
 })
 
 test('checkPluginLocation 接受匹配的目录与 shard', () => {
@@ -156,6 +205,6 @@ test('checkPluginLocation 拒绝放错 shard', () => {
   )
 })
 
-test('FIELDS 恰好是五个字段', () => {
-  assert.deepEqual([...FIELDS], ['id', 'package', 'source', 'repo', 'dispatch-type'])
+test('FIELDS 恰好是六个字段', () => {
+  assert.deepEqual([...FIELDS], ['id', 'package', 'source', 'repo', 'readme', 'dispatch-type'])
 })

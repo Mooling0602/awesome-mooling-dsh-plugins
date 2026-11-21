@@ -2,4 +2,7 @@ id: dsh-hint-shell
 package: dsh-hint-shell
 source: github
 repo: https://github.com/Mooling0602/dsh-hint-shell
+readme:
+  zh_CN: README.zh.md
+  en_US: README.md
 dispatch-type: tarball

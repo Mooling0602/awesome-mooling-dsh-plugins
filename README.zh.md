@@ -45,14 +45,17 @@ https://mynpm.staringplanet.top/dsh-plugins/index.json
 
 下面的内容是完整的推荐插件列表，将会由 CI 自动生成，并自动提交到仓库。
 
-- [dsh-mloader](https://github.com/Mooling0602/dsh-mloader)（[中文](https://github.com/Mooling0602/dsh-mloader/blob/main/README.zh.md)）
-
 - [dsh-better-plugin-updater](https://github.com/Mooling0602/dsh-better-plugin-updater)（[中文](https://github.com/Mooling0602/dsh-better-plugin-updater/blob/main/README.zh.md)）
+  ![](https://img.shields.io/badge/version-v0.1.2-blue) ![](https://img.shields.io/badge/ci-passing-brightgreen) ![](https://img.shields.io/badge/license-MIT-blue) ![](https://img.shields.io/badge/dsh-%3E%3D0.2.1--rc.4_%3C0.3.0-4D6BFE)
+
+- [dsh-bili-danmaku-overlay](https://github.com/Mooling0602/dsh-bili-danmaku-overlay)（[中文](https://github.com/Mooling0602/dsh-bili-danmaku-overlay/blob/main/README.md)）
+  ![](https://img.shields.io/badge/version-v1.1.0-blue) ![](https://img.shields.io/badge/license-MIT-blue) ![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)
 
 - [dsh-hint-shell](https://github.com/Mooling0602/dsh-hint-shell)（[中文](https://github.com/Mooling0602/dsh-hint-shell/blob/main/README.zh.md)）
+  ![](https://img.shields.io/badge/version-v0.1.1-blue) ![](https://img.shields.io/badge/ci-passing-brightgreen) ![](https://img.shields.io/badge/license-MIT-blue)
+
+- [dsh-mloader](https://github.com/Mooling0602/dsh-mloader)（[中文](https://github.com/Mooling0602/dsh-mloader/blob/main/README.zh.md)）
+  ![](https://img.shields.io/badge/version-v0.1.0-blue) ![](https://img.shields.io/badge/license-LGPL--3.0--only-blue) ![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)
 
 - [dsh-web-file-uploader](https://github.com/Mooling0602/dsh-web-file-uploader)（[中文](https://github.com/Mooling0602/dsh-web-file-uploader/blob/main/README_zh_CN.md)）
-
-- [dsh-bili-danmaku-overlay](https://github.com/Mooling0602/dsh-bili-danmaku-overlay)（[中文](https://github.com/Mooling0602/dsh-bili-danmaku-overlay/blob/main/README.zh.md)）
-
-- dsh-user-repl
+  ![](https://img.shields.io/badge/pre--release-v1.0.0--rc.3-orange) ![](https://img.shields.io/badge/ci-passing-brightgreen) ![](https://img.shields.io/badge/license-MIT-blue)

@@ -9,6 +9,7 @@ function plugin(id: string, source: Plugin['source'], dispatchType: Plugin['disp
     package: id,
     source,
     repo: `https://github.com/Mooling0602/${id}`,
+    readme: { zh_CN: 'README.zh.md', en_US: 'README.md' },
     dispatchType,
     shard: 'dsh-xx',
     file: 'p.yml',

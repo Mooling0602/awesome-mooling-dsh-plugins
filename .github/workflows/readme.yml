@@ -1,0 +1,100 @@
+name: README
+
+# Regenerates README.md and README.zh.md from templates/ plus the plugin metadata under plugins/, and commits them only
+# when the generated text actually differs from what is already in the repository.
+#
+# Every input that decides the output is watched, and nothing else is. A new or edited plugin.yml changes the list; an
+# edited template changes everything around it; and an edited generator changes how either is turned into text, so the
+# three modules the generator needs are named individually rather than as `src/**`, because the registry worker and its
+# routes cannot affect a README and would only trigger pointless runs.
+#
+# The commit is created through the GraphQL API rather than `git commit` plus `git push`, because GitHub signs commits
+# made through that mutation on the server and marks them verified. A commit made with `git` would carry the right
+# author but no signature. Commits created with the workflow's own GITHUB_TOKEN do not start a new workflow run, so this
+# cannot loop, and the README files are not a watched path either.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'plugins/**'
+      - 'templates/**'
+      - 'src/metadata.ts'
+      - 'src/releases.ts'
+      - 'src/readme/**'
+  workflow_dispatch:
+
+# One regeneration at a time. A second run would start from the first run's commit anyway, so queuing behind it is both
+# cheaper and race-free.
+concurrency:
+  group: readme
+  cancel-in-progress: false
+
+permissions:
+  # Creating the commit needs a write scope on the repository contents. Nothing else is touched.
+  contents: write
+
+jobs:
+  readme:
+    name: Update README
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # The generator reads each plugin repository's default branch so a relative README path can become a link. The
+      # token keeps that inside the GitHub API rate limit.
+      - name: Generate READMEs
+        run: pnpm readme
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # A diff means the generated text changed; an empty diff means the run had nothing to do. Checking the diff rather
+      # than always committing keeps the history free of no-op commits.
+      #
+      # `createCommitOnBranch` takes the two files as additions, which overwrite a file that already exists, and an
+      # `expectedHeadOid` read from the checkout, so a concurrent push makes the mutation fail instead of silently
+      # dropping that push.
+      - name: Commit only when the generated text changed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          if git diff --quiet -- README.md README.zh.md; then
+            echo 'the generated README is already up to date'
+            exit 0
+          fi
+          jq -n \
+            --arg query 'mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid url } } }' \
+            --arg repository "$REPOSITORY" \
+            --arg branch "$BRANCH" \
+            --arg oid "$(git rev-parse HEAD)" \
+            --arg readme "$(base64 -w0 README.md)" \
+            --arg readmeZh "$(base64 -w0 README.zh.md)" \
+            '{
+              query: $query,
+              variables: {
+                input: {
+                  branch: { repositoryNameWithOwner: $repository, branchName: $branch },
+                  expectedHeadOid: $oid,
+                  message: { headline: "docs: update README files" },
+                  fileChanges: {
+                    additions: [
+                      { path: "README.md", contents: $readme },
+                      { path: "README.zh.md", contents: $readmeZh }
+                    ]
+                  }
+                }
+              }
+            }' > "$RUNNER_TEMP/commit.json"
+          gh api graphql --input "$RUNNER_TEMP/commit.json"
