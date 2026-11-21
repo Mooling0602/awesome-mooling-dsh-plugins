@@ -75,9 +75,13 @@ test('dshVersionOf 对空 manifest 返回 undefined', () => {
   assert.equal(dshVersionOf({}), undefined)
 })
 
-test('ownBadgesOf 只保留 shields.io 图片', () => {
+test('ownBadgesOf 接受任意 https 图片', () => {
   const readme = '![](https://img.shields.io/badge/a-b-blue) ![](https://example.test/x.svg)'
-  assert.deepEqual(ownBadgesOf(readme), ['https://img.shields.io/badge/a-b-blue'])
+  assert.deepEqual(ownBadgesOf(readme), ['https://img.shields.io/badge/a-b-blue', 'https://example.test/x.svg'])
+})
+
+test('ownBadgesOf 忽略非 https 图片', () => {
+  assert.deepEqual(ownBadgesOf('![](http://example.test/x.svg)'), [])
 })
 
 test('ownBadgesOf 去重并保持首次出现顺序', () => {
@@ -146,6 +150,14 @@ test('subjectOf 把 powered_by-dsh 认作 dsh 主题', () => {
 
 test('subjectOf 对无关徽标返回 undefined', () => {
   assert.equal(subjectOf('https://img.shields.io/badge/made_with-love-red'), undefined)
+  assert.equal(subjectOf('https://awesome-dsh-plugin.com/badge.svg'), undefined)
+})
+
+test('subjectOf 把 actions workflow 徽标认作 ci', () => {
+  assert.equal(
+    subjectOf('https://github.com/a/b/actions/workflows/ci.yml/badge.svg'),
+    'ci',
+  )
 })
 
 test('badgesFor 丢掉被自动徽标覆盖的同主题自带徽标', () => {

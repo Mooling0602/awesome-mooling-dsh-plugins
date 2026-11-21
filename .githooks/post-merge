@@ -1,0 +1,6 @@
+#!/bin/sh
+# Apply the same generated-README hiding as post-checkout, after `git pull` and `git merge`.
+#
+# A pull can bring in a new README from CI, which without this would arrive as a local modification. The post-checkout
+# hook does not fire for a merge, so the shared script is run from both.
+exec "$(git rev-parse --show-toplevel)/.githooks/hide-generated-readme"

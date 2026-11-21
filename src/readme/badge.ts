@@ -95,17 +95,17 @@ export function dshVersionOf(manifest: Record<string, unknown>): string | undefi
 }
 
 /**
- * Read the shields.io badges a README already declares.
+ * Read the badges a README already declares.
  *
- * Only shields.io images are kept: another badge service may render anything, and this repository must not embed an
- * image whose origin it cannot reason about. A badge repeated further down the same README is kept once, at the
- * position it first appears, so the list reads in the plugin author's own order.
+ * Any https image is kept, not only shields.io: a plugin may use its own badge service, and that badge is still just an
+ * image a plugin author chose to show. A badge repeated further down the same README is kept once, at the position it
+ * first appears, so the list reads in the plugin author's own order.
  * @param readme - the README text.
- * @returns shields.io image URLs, deduplicated, in first-seen order.
+ * @returns https image URLs, deduplicated, in first-seen order.
  */
 export function ownBadgesOf(readme: string): string[] {
   const seen = new Set<string>()
-  for (const match of readme.matchAll(/!\[[^\]]*\]\((https:\/\/img\.shields\.io\/[^)\s]+)\)/gu)) {
+  for (const match of readme.matchAll(/!\[[^\]]*\]\((https:\/\/[^)\s]+)\)/gu)) {
     const url = match[1]
     if (url !== undefined) seen.add(url)
   }
@@ -121,19 +121,27 @@ export function ownBadgesOf(readme: string): string[] {
  */
 const SUBJECTS: readonly { readonly subject: string; readonly test: RegExp }[] = [
   { subject: 'version', test: /(?:^|[/-])(?:version|release|tag|v)(?:$|[-/])|shields\.io\/badge\/version|shields\.io\/github\/v\//iu },
-  { subject: 'license', test: /licen[cs]e|shields\.io\/github\/license/iu },
-  { subject: 'ci', test: /(?:^|[/-])(?:ci|build|tests?|checks?)(?:$|[-/])|actions\/workflow\/status|travis|circleci/iu },
-  { subject: 'dsh', test: /(?:^|[/-])dsh(?:$|[-/])|deepseek/iu },
+  { subject: 'license', test: /licen[cs]e/iu },
+  {
+    subject: 'ci',
+    test: /(?:^|[/_.-])(?:ci|build|tests?|checks?)(?:$|[/_.-])|actions\/workflows?\/|travis|circleci/iu,
+  },
+  { subject: 'dsh', test: /(?:^|[/_-])dsh(?:$|[/_.-])|(?:^|[/_-])deepseek|powered_by-dsh/iu },
 ]
 
 /**
  * Read the subject a badge is about.
+ *
+ * The URL is only a hint at what the badge shows, so the checks are ordered: a path segment that names a subject wins
+ * over a bare host name, because a badge served from a site with `dsh` in its name is not necessarily a DSH badge, and
+ * an `actions/workflows/.../badge.svg` path is a CI badge whatever the repository is called.
  * @param url - the badge URL.
  * @returns the subject, or `undefined` when the badge is about something else.
  */
 export function subjectOf(url: string): string | undefined {
+  const path = url.replace(/^https?:\/\/[^/]+/u, '')
   for (const { subject, test } of SUBJECTS) {
-    if (test.test(url)) return subject
+    if (test.test(path)) return subject
   }
   return undefined
 }

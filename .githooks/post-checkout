@@ -1,0 +1,6 @@
+#!/bin/sh
+# Hide local edits to the generated README files after a checkout, which covers a fresh clone and every branch switch.
+#
+# The work is done by the shared script, because `git pull` arrives through post-merge rather than post-checkout and both
+# have to behave the same.
+exec "$(git rev-parse --show-toplevel)/.githooks/hide-generated-readme"
