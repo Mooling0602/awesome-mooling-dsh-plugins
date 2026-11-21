@@ -4,7 +4,7 @@
 
 [English](README.md)
 
-## dsh-plugins（TypeScript/JavaScript）
+## 插件列表（DSH 插件 - TypeScript/JavaScript）
 
 - [dsh-mloader](https://github.com/Mooling0602/dsh-mloader)（[中文](https://github.com/Mooling0602/dsh-mloader/blob/main/README.zh.md)）
 > 开发中，已提供构建好的 JS 产物。
@@ -20,9 +20,12 @@
 
 - [dsh-bili-danmaku-overlay](https://github.com/Mooling0602/dsh-bili-danmaku-overlay)（[中文](https://github.com/Mooling0602/dsh-bili-danmaku-overlay/blob/main/README.zh.md)）
 > 开发中，已提供构建好的 JS 产物。
+
 - dsh-user-repl
 
 ## dsh-mloader-plugins
+
+> 由于上游还尚处开发阶段，暂无稳定版本提供。
 
 - [dsh-credentials-helper](https://github.com/Mooling0602/dsh-credentials-helper)（[中文](https://github.com/Mooling0602/dsh-credentials-helper/blob/main/README.zh.md)）
 

@@ -4,7 +4,7 @@ My useful dsh-plugins. Without link, means the plugin is still in developing loc
 
 [中文](README.zh.md)
 
-## dsh-plugins (TypeScript/JavaScript)
+## Plugin Lists (dsh-plugins in TypeScript/JavaScript)
 
 - [dsh-mloader](https://github.com/Mooling0602/dsh-mloader)
 > Developing... Built JS assets provided.
@@ -20,9 +20,12 @@ My useful dsh-plugins. Without link, means the plugin is still in developing loc
 
 - [dsh-bili-danmaku-overlay](https://github.com/Mooling0602/dsh-bili-danmaku-overlay)
 > Developing... Built JS assets provided.
+
 - dsh-user-repl
 
 ## dsh-mloader-plugins
+
+> No stable release will be provided due to upstream is in developing.
 
 - [dsh-credentials-helper](https://github.com/Mooling0602/dsh-credentials-helper)
 
