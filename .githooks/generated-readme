@@ -3,15 +3,45 @@
 #
 # The files are generated and committed by CI, so on a developer machine they are an output and their local edits stay
 # hidden. Editing one by hand is rare but legitimate, and `skip-worktree` also makes `git add` refuse the path, so the
-# flag has to come off first. This script is that switch, and it restores the flag when given `off`.
+# flag has to come off first. This script is that switch, and it restores the flag when given `on`.
 #
-#   .githooks/generated-readme on     hide local edits (what the hooks do automatically)
-#   .githooks/generated-readme off    show them again, so they can be edited and committed
-#   .githooks/generated-readme status report the current state
+#   .githooks/generated-readme on      hide local edits (what the hooks do automatically)
+#   .githooks/generated-readme off     show them again, so they can be edited and committed
+#   .githooks/generated-readme reset   discard local edits and match the committed copy
+#   .githooks/generated-readme status  report the current state
+#
+# Messages are inlined in English and Chinese rather than routed through gettext. git itself uses gettext, but that
+# needs the toolchain installed and a compiled catalogue shipped here, which is a lot of machinery for a handful of
+# lines. `LC_ALL` wins over `LC_MESSAGES` and `LANG`, as gettext does, and anything that is not Chinese gets English.
 set -eu
 
+lang=${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}
+case $lang in
+  zh_* | *_CN* | *_cn*) chinese=1 ;;
+  *) chinese='' ;;
+esac
+
+# Print one message, picking the Chinese variant when the locale asks for it. Each call passes both texts so the pairs
+# stay side by side and cannot drift apart the way separate tables do.
+say() {
+  if [ -n "$chinese" ]; then
+    printf '%s\n' "$2"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
+# Same, but on stderr, which is where a problem belongs.
+warn() {
+  if [ -n "$chinese" ]; then
+    printf '%s\n' "$2" >&2
+  else
+    printf '%s\n' "$1" >&2
+  fi
+}
+
 root=$(git rev-parse --show-toplevel 2>/dev/null) || {
-  echo 'generated-readme: not inside a git repository' >&2
+  warn 'generated-readme: not inside a git repository' 'generated-readme: 不在 git 仓库内'
   exit 1
 }
 cd "$root"
@@ -22,17 +52,32 @@ files='README.md README.zh.md'
 # on in the middle of a hand edit. The marker lives in the git directory, so it is per-clone and never committed.
 marker=$(git rev-parse --git-dir)/generated-readme-off
 
+# Print the English or Chinese form of one word, without a newline.
+word() {
+  if [ -n "$chinese" ]; then
+    printf '%s' "$2"
+  else
+    printf '%s' "$1"
+  fi
+}
+
 # `git ls-files -v` marks a skip-worktree entry with a leading `S`, which is the only portable way to read the flag back.
+# The word is returned already translated, so the caller does not have to glue a state name onto a translated sentence.
 state() {
   for file in $files; do
     git ls-files --error-unmatch -- "$file" >/dev/null 2>&1 || continue
     case $(git ls-files -v -- "$file") in
-      S*) echo hidden ;;
-      *) echo visible ;;
+      S*) word hidden 已隐藏 ;;
+      *) word visible 可见 ;;
     esac
     return
   done
-  echo missing
+  word missing 不存在
+}
+
+# The blob the index holds for one path, or nothing when the path is not tracked.
+indexed_blob() {
+  git rev-parse --verify --quiet ":$1" || true
 }
 
 case ${1:-status} in
@@ -42,7 +87,12 @@ case ${1:-status} in
       git ls-files --error-unmatch -- "$file" >/dev/null 2>&1 || continue
       git update-index --skip-worktree -- "$file"
     done
-    echo 'generated-readme: local edits to README.md and README.zh.md are now hidden'
+    # Silent on success: the hooks run on every checkout and a message each time would be noise. Only the explicit
+    # invocation, where the user asked for the change, reports it.
+    if [ "${GENERATED_README_QUIET:-0}" != '1' ]; then
+      say 'generated-readme: local edits to README.md and README.zh.md are now hidden' \
+        'generated-readme: 已隐藏 README.md 和 README.zh.md 的本地修改'
+    fi
     ;;
   off)
     : > "$marker"
@@ -50,18 +100,46 @@ case ${1:-status} in
       git ls-files --error-unmatch -- "$file" >/dev/null 2>&1 || continue
       git update-index --no-skip-worktree -- "$file"
     done
-    echo 'generated-readme: local edits are now visible and can be committed'
-    echo '  the hiding stays off, including across checkouts, until `.githooks/generated-readme on`'
+    say 'generated-readme: local edits are now visible and can be committed' \
+      'generated-readme: 本地修改已可见，可以提交了'
+    say '  the hiding stays off, including across checkouts, until `.githooks/generated-readme on`' \
+      '  在运行 `.githooks/generated-readme on` 之前，隐藏会一直保持关闭，切换分支和拉取也不例外'
+    ;;
+  reset)
+    # Discarding is the only way to make a differing copy match again, because a flagged path cannot be staged and the
+    # hooks deliberately refuse to overwrite it. `--ignore-skip-worktree-bits` is what lets checkout-index touch a flagged
+    # path at all; without it, it refuses the very file it was asked to restore.
+    for file in $files; do
+      git ls-files --error-unmatch -- "$file" >/dev/null 2>&1 || continue
+      git checkout-index -f --ignore-skip-worktree-bits -- "$file"
+    done
+    say 'generated-readme: local edits discarded; README.md and README.zh.md match the committed copy' \
+      'generated-readme: 已丢弃本地修改，README.md 和 README.zh.md 已恢复为已提交的版本'
     ;;
   status)
     if [ -e "$marker" ]; then
-      echo 'generated-readme: visible (turned off by hand)'
+      say 'generated-readme: visible (turned off by hand)' \
+        'generated-readme: 可见（已手动关闭隐藏）'
     else
-      echo "generated-readme: $(state)"
+      # The flag and the working copy are independent, so a copy can be both hidden and out of date. Reporting the drift
+      # here is what makes `status` useful before a pull rather than only after one.
+      drifted=''
+      for file in $files; do
+        indexed=$(indexed_blob "$file")
+        [ -n "$indexed" ] || continue
+        current=$(git hash-object -- "$file" 2>/dev/null) || continue
+        [ "$indexed" = "$current" ] || drifted="$drifted $file"
+      done
+      if [ -n "$drifted" ]; then
+        say "generated-readme: $(state), with local edits in$drifted" \
+          "generated-readme: $(state)，但这些文件有本地修改：$drifted"
+      else
+        say "generated-readme: $(state)" "generated-readme: $(state)"
+      fi
     fi
     ;;
   *)
-    echo "usage: $(basename "$0") [on|off|status]" >&2
+    warn "usage: $(basename "$0") [on|off|reset|status]" "用法：$(basename "$0") [on|off|reset|status]"
     exit 2
     ;;
 esac
