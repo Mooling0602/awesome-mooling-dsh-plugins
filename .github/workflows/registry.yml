@@ -72,9 +72,17 @@ jobs:
 
       # The worker caches each proxy decision in KV. Those records are derived data, and a record written by an older
       # worker can outlive the bug that caused it: a past version refused packages a real install needed, and the
-      # refusals had no expiry. Rebuilding the cache on every deploy makes that self-healing instead of a manual repair.
+      # refusals had no expiry. Rebuilding the cache makes that self-healing instead of a manual repair.
+      #
+      # Only a manual run rebuilds it. A delete and a rewrite per record is real write traffic, and the free plan allows
+      # a fixed number of KV writes per day, shared with the packument upload below. A push that merely bumps a plugin
+      # would otherwise spend that budget on cache maintenance and could fail the deploy for no reason: that happened,
+      # with the API answering `your account has reached the free usage limit for this operation for today`. A manual
+      # run is the moment someone is already watching the deploy, so it is the right time to pay the cost.
+      #
       # The listing is filtered by `--cache-plan`, so only decision records are removed and the packuments stay.
       - name: Drop cached proxy decisions
+        if: github.event_name == 'workflow_dispatch'
         run: |
           pnpm exec wrangler kv key list --binding REGISTRY --remote > "$RUNNER_TEMP/kv-keys.json"
           node src/registry/build.ts --cache-plan < "$RUNNER_TEMP/kv-keys.json"
