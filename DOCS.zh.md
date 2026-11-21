@@ -36,7 +36,7 @@ dispatch-type: npmjs  # 目前支持 npmjs|source|tarball
 
 ## 索引构建
 
-索引不是手工编写的，而是由 CI 从插件元数据和生产环境实时读取的插件发行信息生成，再发布到 CloudFlare Workers 的 KV 存储中。整个流程由 `.github/workflows/registry.yml` 驱动，分两个有先后依赖的任务。
+索引不是手工编写的，而是由 CI 从插件元数据和插件自身的发行信息（GitHub release、npmjs 源，或插件的 Git 历史）生成，再随 Workers 一起部署出去。整个流程由 `.github/workflows/registry.yml` 驱动，分两个有先后依赖的任务。
 
 ### 为什么会有一台 Workers
 
@@ -58,11 +58,11 @@ DSH 的插件索引格式中，一个版本只有两种来源：npm 包，或 gi
 
 每一轮 CI 的步骤如下。
 
-1. 构建 registry 数据。读取每个 `dispatch-type: tarball` 插件的 GitHub release 资产，按 tarball 的实际字节计算 integrity，生成对应的 packument 和 tarball 重定向表。
-2. 用 `build-index.sh` 构建索引，它调用 `src/index/build.ts`。这个脚本先读本仓库的元数据，再按 dispatch 类型分别读 GitHub release API、npmjs 源，或插件自己的 Git 历史。凡是 npm 形式的条目，都记录本仓库自己的 registry 地址，所以版本列表虽然读自 GitHub，客户端安装时仍然走代理。
-3. 先把 packument 批量写入 KV，再部署 Workers。顺序不能反，否则在部署切换的瞬间，客户端解析托管包会拿到 404 并把它记进自己的 lockfile。
+1. 构建 registry 数据。读取每个 `dispatch-type: tarball` 插件的 GitHub release 资产，按 tarball 的实际字节计算 integrity，生成对应的 packument，以及一张从版本号到资产地址的映射表。
+2. 构建索引。`build-index.sh` 只是检查输入是否就位的薄封装，真正干活的是 `node src/index/build.ts`：它先读本仓库的元数据，再按 dispatch 类型分别读 GitHub release API、npmjs 源，或插件自己的 Git 历史。凡是 npm 形式的条目，都记录本仓库自己的 registry 地址，所以版本列表虽然读自 GitHub，客户端安装时仍然走代理。
+3. 先部署 Workers，再批量写入 packument。顺序是刻意反过来的：写入放在前面时，一旦某天免费计划的 KV 写入配额耗尽，连和 KV 无关的 Workers 改动都发不出去；而数据落后一个版本的 Workers 仍然是能用的 Workers，旧 packument 还在 KV 里，照常解析。代价是本次发布的新版本在写入成功前查不到，所以上传失败必须让整个任务失败。
 
-索引本身不是 KV 记录，而是编译进 Workers 脚本的。它和 packument 一起随部署到达用户，刷新索引不消耗任何 KV 写入。这是有意的：KV 写入原本要和 packument 上传共用很小的每日配额，某天配额耗尽时，新索引明明算对了，用户却仍然停在旧索引上。现在索引仍可能过期，但只会在部署失败期间过期——那是看得见的——而不是在配额耗尽的整段时间里过期，那是看不见的。
+索引本身不是 KV 记录，而是编译进 Workers 脚本的，随部署直接到达用户，刷新它不消耗任何 KV 写入。这是有意的：索引原本是一次 KV 写入，要和 packument 上传共用很小的每日配额，某天配额耗尽时，新索引明明算对了，用户却仍然停在旧索引上。现在索引仍可能过期，但只会在部署失败期间过期——那是看得见的——而不是在配额耗尽的整段时间里过期，那是看不见的。
 
 全过程中 `dists/` 都不会进入版本库：它是构建产物。这样也避免了“每次更新都要提交一个生成文件”的噪音提交。本地检出还没有索引时，`src/index/ensure.ts` 会按需生成它，`pnpm check` 和 `pnpm test` 因此在全新克隆上也能直接跑。
 
@@ -75,7 +75,7 @@ DSH 的插件索引格式中，一个版本只有两种来源：npm 包，或 gi
 | 操作 | 配额耗尽时 |
 | --- | --- |
 | 读取已在 KV 里的 packument | 正常 |
-| 跟随 tarball 重定向 | 正常 |
+| 下载已有版本的 tarball | 正常 |
 | 安装已发布过的版本 | 正常 |
 | 安装本轮刚发布的版本 | 失败 |
 | 安装本轮新加的插件 | 失败，返回 404 |
