@@ -94,6 +94,23 @@ As for the version badge, if the plugin is collected through the GitHub release 
 
 The plugin name part is a plugin name linked to its source repository, and depending on the language of the README it appears in, a Chinese translation link is added or omitted.
 
+## Local README files
+
+`README.md` and `README.zh.md` are generated and committed by CI, so locally they are an output rather than an input. The repository's git hooks flag both files with `skip-worktree` so local edits stay out of `git status`, which keeps them from being committed by accident or from blocking a pull.
+
+The scripts live under `.githooks`:
+
+- `.githooks/generated-readme on`: hide local edits (the hooks do this after a checkout or a pull)
+- `.githooks/generated-readme off`: show them again, so they can be edited and committed
+- `.githooks/generated-readme reset`: discard local edits and match the committed copy
+- `.githooks/generated-readme status`: report the current state
+
+To edit a README by hand, run `off` first, make the change, commit and push, then run `on`. The `off` state persists, so checkouts and pulls in the meantime will not turn the hiding back on.
+
+`skip-worktree` has one limitation worth knowing: a flagged file cannot be staged at all, not even with `git add -f`, because the flag lives in the index rather than in an ignore rule. Editing one without running `off` does not lose the change, but the hook warns about it and `git status` will not show it.
+
+CI does not need any of this, so the workflow sets `SKIP_README_WORKTREE=1` to keep the hooks out of the way.
+
 ## Contributing
 
 PRs to this repository are welcome! Before creating a fork and opening a PR, you need to follow these conventions:

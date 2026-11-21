@@ -94,6 +94,23 @@ pnpm test            # 运行测试
 
 插件名称部分显示链接到其源码仓库的插件名称，并根据当前所在自述文件的语言类型判断是否添加中文翻译的链接。
 
+## 本地自述文档
+
+`README.md` 和 `README.zh.md` 由 CI 生成并提交，在本地它们只是产物而不是输入。仓库内的 git hook 会把这两个文件标记为 `skip-worktree`，让本地修改不出现在 `git status` 里，避免误提交或与拉取冲突。
+
+相关脚本在 `.githooks` 下：
+
+- `.githooks/generated-readme on`：隐藏本地修改（hook 在切换分支和拉取后自动执行）
+- `.githooks/generated-readme off`：取消隐藏，此时修改可见、可提交
+- `.githooks/generated-readme reset`：丢弃本地修改，恢复成已提交的版本
+- `.githooks/generated-readme status`：查看当前状态
+
+需要手动修改自述文档时，先执行 `off` 再改，改完提交并推送，最后执行 `on`。`off` 的状态会一直保持，期间切换分支或拉取都不会被覆盖。
+
+`skip-worktree` 有一个必须注意的限制：被标记的文件无法被 `git add`，加 `-f` 也一样，因为它不是忽略规则而是索引里的标记。直接改了却忘了 `off`，修改不会丢，但 hook 会提示你，`git status` 也看不到它。
+
+CI 环境下不需要这套机制，工作流会通过 `SKIP_README_WORKTREE=1` 让它跳过。
+
 ## 贡献
 
 欢迎你为本仓库提交 PR！在创建 fork 并打开 PR 之前，你需要遵循以下规范：
