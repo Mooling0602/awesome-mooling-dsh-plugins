@@ -18,12 +18,20 @@
  * and every other exit code would be read as "nothing to publish" — the one wrong answer, since it silently skips a
  * release. Exit 0 means a verdict was written; anything else means the check broke, and the caller must not publish.
  */
-import { writeFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { generate } from './build.ts'
 
+/** Repository root, one level above `src/index/`. */
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
+
 /** Where the deployed index is served from. */
 const DEPLOYED = 'https://mynpm.staringplanet.top/dsh-plugins/index.json'
+
+/** The registry base, trailing slash included, as a client sees it. */
+const REGISTRY = 'https://mynpm.staringplanet.top/'
 
 /**
  * Read the deployed index.
@@ -80,6 +88,86 @@ export function moved(local: unknown, remote: unknown): boolean {
 }
 
 /**
+ * Ask the registry for one package's packument.
+ * @param name - the package to read.
+ * @returns the packument, or undefined when it could not be read.
+ */
+async function packumentOf(name: string): Promise<unknown> {
+  try {
+    const response = await fetch(`${REGISTRY}${name}`, {
+      cache: 'no-store',
+      headers: { accept: 'application/vnd.npm.install-v1+json', 'cache-control': 'no-cache' },
+    })
+    if (!response.ok) return undefined
+    return await response.json()
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The newest version of every converted package in an index.
+ *
+ * Split out from the network so the selection can be tested: a check that asks about the wrong versions would report a
+ * clean registry no matter what KV actually holds.
+ * @param index - an index document.
+ * @param hosted - the package names this registry converts.
+ * @returns one `[name, version]` pair per converted package.
+ */
+export function newestOf(index: unknown, hosted: ReadonlySet<string>): [string, string][] {
+  const plugins = (index as { plugins?: unknown } | null | undefined)?.plugins
+  if (!Array.isArray(plugins)) return []
+  const newest: [string, string][] = []
+  for (const plugin of plugins) {
+    const entry = plugin as { name?: unknown; versions?: unknown }
+    if (typeof entry.name !== 'string' || !hosted.has(entry.name)) continue
+    if (!Array.isArray(entry.versions)) continue
+    const highest = (entry.versions[0] as { version?: unknown } | undefined)?.version
+    if (typeof highest !== 'string') continue
+    newest.push([entry.name, highest])
+  }
+  return newest
+}
+
+/**
+ * Whether one version's packument advertises this registry.
+ * @param packument - the packument read from the registry.
+ * @param version - the version to inspect.
+ * @returns false when the version is absent or `dist.tarball` points elsewhere.
+ */
+export function advertises(packument: unknown, version: string): boolean {
+  const versions = (packument as { versions?: Record<string, { dist?: { tarball?: unknown } }> } | null | undefined)?.versions
+  const tarball = versions?.[version]?.dist?.tarball
+  return typeof tarball === 'string' && tarball.startsWith(REGISTRY)
+}
+
+/**
+ * Whether a converted packument still advertises the release asset instead of this registry.
+ *
+ * The check exists because of a specific, observed inconsistency rather than a hypothetical one. `dist.tarball` used to
+ * point at the GitHub release asset, and a client writes that field into its lockfile verbatim, which pins an install to
+ * the origin this registry exists to keep it off. Fixing the generator only helps once the packuments carrying the new
+ * field reach KV, and the upload is the step that fails when the write quota runs out. Comparing version lists cannot
+ * see that: both sides list the same versions, and only the URL inside them changed.
+ *
+ * Only packages this repository converts are checked. A plugin published to npm is proxied rather than converted, so its
+ * packument is npmjs's own document and its upstream URL is correct.
+ * @param index - the index being served.
+ * @param hosted - the package names this registry converts.
+ * @returns the names still pointing somewhere other than this registry.
+ */
+export async function misadvertised(index: unknown, hosted: ReadonlySet<string>): Promise<string[]> {
+  const wrong: string[] = []
+  for (const [name, version] of newestOf(index, hosted)) {
+    const packument = await packumentOf(name)
+    // An unreadable packument is reported as wrong: a registry that cannot answer is not one a client can install from,
+    // and silence here would mean never retrying the upload.
+    if (packument === undefined || !advertises(packument, version)) wrong.push(name)
+  }
+  return wrong
+}
+
+/**
  * Compare the generated index with the deployed one.
  * @param root - repository root.
  * @returns whether they differ.
@@ -89,7 +177,36 @@ export async function changed(root?: string): Promise<boolean> {
   const local = await generate(root)
   const remote = await deployed(DEPLOYED)
   if (remote === undefined) throw new Error(`${DEPLOYED} could not be read`)
-  return moved(local, remote)
+  if (moved(local, remote)) return true
+  // The indexes agree, which proves the worker is current but not that its data is. The packuments are uploaded by a
+  // later step that fails on its own, and a market whose packuments advertise an unreachable origin is the result.
+  const wrong = await misadvertised(remote, await converted(root))
+  if (wrong.length > 0) {
+    console.log(`the registry advertises the wrong tarball origin for: ${wrong.join(', ')}`)
+    return true
+  }
+  return false
+}
+
+/**
+ * The packages this repository converts, which are the ones whose `dist.tarball` it controls.
+ *
+ * Read from the generated manifest rather than from the index: the index also lists plugins published to npm and plugins
+ * installed from their repository, and neither is converted here.
+ * @param root - repository root.
+ * @returns the converted package names.
+ */
+async function converted(root?: string): Promise<ReadonlySet<string>> {
+  const target = join(root ?? ROOT, 'dists', 'registry', 'manifest.json')
+  let text: string
+  try {
+    text = await readFile(target, 'utf8')
+  } catch {
+    // No manifest means nothing was converted, which leaves nothing to check rather than a reason to fail.
+    return new Set()
+  }
+  const manifest = JSON.parse(text) as { packages?: Record<string, unknown> }
+  return new Set(Object.keys(manifest.packages ?? {}))
 }
 
 /**
