@@ -23,8 +23,21 @@ export const DENY_PREFIX = '__deny__/'
 /** The fields a package's own manifest declares as dependencies. All of them have to be resolvable for an install. */
 const DEPENDENCY_FIELDS = ['dependencies', 'peerDependencies', 'optionalDependencies'] as const
 
+/**
+ * Scopes whose packages are proxied without walking the dependency graph.
+ *
+ * A DSH plugin is useless without the runtime it plugs into, so every plugin's graph reaches into the same vendor scope
+ * and pulls a large part of it in. Walking that closure per request does not work: measured against npm, the graph
+ * including every published version is over eight hundred packages, and resolving it takes around ninety seconds, far
+ * past what one request may spend. The vendor scope is therefore answered directly.
+ *
+ * This stays narrower than "proxy everything": names outside these scopes still have to be reachable from a hosted
+ * package, so the domain cannot be used to install arbitrary packages.
+ */
+const OPEN_SCOPES = ['@deepseek-ai/'] as const
+
 /** How many packages one walk may visit. A pathological graph must not exhaust the request budget. */
-const WALK_LIMIT = 32
+const WALK_LIMIT = 64
 
 /**
  * How long a refusal is remembered.
@@ -42,31 +55,31 @@ export interface Resolved {
 }
 
 /**
- * Read the dependency names one version of a package declares.
- * @param version - the version record from a packument.
- * @returns the dependencies across all dependency fields, deduplicated.
+ * Read the dependency names a package declares for the purposes of the walk.
+ *
+ * A dependency is walked at its latest version, not every published one. A package with a long release history would
+ * otherwise contribute the dependencies of every release it ever shipped, and those historical packages dwarf the graph
+ * that an install actually touches. The latest version is the one a client resolves for a plain name, so it is the right
+ * approximation for a guess — a walk is a guess, and the request itself is what confirms it.
+ *
+ * Peer dependencies count. npm satisfies a peer constraint by fetching the named package, so a name that appears only in
+ * `peerDependencies` is still requested by the client.
+ * @param packument - the packument, holding every published version.
+ * @param version - the one version to read, or `undefined` to read the latest.
+ * @returns the dependency names across the selected version and all dependency fields, deduplicated.
  */
-export function dependenciesOf(version: Readonly<Record<string, unknown>> | undefined): string[] {
-  if (version === undefined) return []
+export function dependenciesOf(packument: Resolved | undefined, version?: string): string[] {
+  if (packument === undefined) return []
+  const wanted = version ?? packument['dist-tags']?.latest
+  const record = wanted === undefined ? undefined : packument.versions?.[wanted]
+  if (record === undefined || record === null || typeof record !== 'object') return []
   const names = new Set<string>()
   for (const field of DEPENDENCY_FIELDS) {
-    const value = version[field]
+    const value = record[field]
     if (value === null || typeof value !== 'object') continue
     for (const name of Object.keys(value)) names.add(name)
   }
   return [...names]
-}
-
-/**
- * Read the latest version record out of a packument.
- * @param packument - the upstream packument.
- * @returns the version record, or undefined when the packument names no usable latest version.
- */
-export function latestOf(packument: Resolved): Readonly<Record<string, unknown>> | undefined {
-  const latest = packument['dist-tags']?.latest
-  if (typeof latest !== 'string') return undefined
-  const version = packument.versions?.[latest]
-  return version === undefined ? undefined : version
 }
 
 /** Whether a name is one this worker answers for directly, and therefore never needs the allow list. */
@@ -78,16 +91,34 @@ export type Hosts = (name: string) => boolean
  * Returns `undefined` when the package's manifest is not available locally, which is the case for a package this worker
  * only proxies. The caller then resolves it over the network instead.
  */
-export type OwnDependencies = (name: string) => Promise<readonly string[] | undefined>
+export type OwnDependencies = (name: string, version?: string) => Promise<readonly string[] | undefined>
+
+/**
+ * The version a request asks for, when it asks for one.
+ *
+ * A packument request names no version: the client is about to choose one. A tarball request does name one, and then only
+ * that version's dependencies can matter for the install in progress.
+ * @param name - the package name.
+ * @param parts - the path segments after the package name.
+ * @returns the version, or `undefined` when the request is not version-specific.
+ */
+export function requestedVersion(name: string, parts: readonly string[]): string | undefined {
+  if (parts.length !== 2 || parts[0] !== '-') return undefined
+  const file = decodeURIComponent(parts[1] as string)
+  const base = name.startsWith('@') ? name.slice(name.indexOf('/') + 1) : name
+  const prefix = `${base}-`
+  if (!file.startsWith(prefix) || !file.endsWith('.tgz')) return undefined
+  const version = file.slice(prefix.length, -'.tgz'.length)
+  return version === '' ? undefined : version
+}
 
 /**
  * Fetch one package's packument from the upstream registry, or nothing when it does not exist there.
  * @param name - the package name.
  * @param upstream - registry base URL.
- * @returns the latest version record, or undefined.
+ * @returns the packument, or undefined.
  */
-async function resolve(name: string, upstream: string): Promise<Readonly<Record<string, unknown>> | undefined> {
-  const encoded = name.startsWith('@') ? `@${encodeURIComponent(name.slice(1))}` : encodeURIComponent(name)
+async function resolve(name: string, upstream: string): Promise<Resolved | undefined> {  const encoded = name.startsWith('@') ? `@${encodeURIComponent(name.slice(1))}` : encodeURIComponent(name)
   // The abbreviated packument is enough for dependencies and is far smaller than the full one.
   const response = await fetch(`${upstream}/${encoded}`, {
     headers: { accept: 'application/vnd.npm.install-v1+json' },
@@ -95,7 +126,7 @@ async function resolve(name: string, upstream: string): Promise<Readonly<Record<
   })
   if (!response.ok) return undefined
   try {
-    return latestOf((await response.json()) as Resolved)
+    return (await response.json()) as Resolved
   } catch {
     // A body that is not JSON is treated as "not resolvable here" rather than as a server error, because the caller's
     // only decision is whether to proxy.
@@ -104,11 +135,33 @@ async function resolve(name: string, upstream: string): Promise<Readonly<Record<
 }
 
 /**
+ * Record a package as reachable, so a later request for it needs no walk.
+ * @param kv - the namespace.
+ * @param name - the package name.
+ */
+async function remember(kv: KVNamespace, name: string): Promise<void> {
+  await kv.put(`${ALLOW_PREFIX}${name}`, '1')
+}
+
+/**
+ * Whether a package name sits in a scope this worker always proxies.
+ * @param name - the package name.
+ * @returns whether the scope is open.
+ */
+export function openScope(name: string): boolean {
+  return OPEN_SCOPES.some(scope => name.startsWith(scope))
+}
+
+/**
  * Decide whether a package may be proxied, remembering the answer in KV.
  *
- * A package is allowed when a hosted package depends on it, directly or through other packages. The walk is bounded: it
- * stops after WALK_LIMIT packages, and it checks the KV cache before resolving anything, so a graph walked once is cheap
- * to walk again. A denial is cached too, so a client cannot make the worker re-walk the graph by repeating a request.
+ * A package is allowed when it is reachable from a package this worker answers for. The walk is breadth-first from those
+ * roots and stops at WALK_LIMIT packages, and every package it traverses is recorded as allowed, not only the one that
+ * was asked for: the whole path from a root is part of the same dependency graph, so a later request for a package the
+ * walk has already proven reachable costs one KV read and no network call.
+ *
+ * A denial is cached with a TTL rather than for good, because the graph can grow: a plugin may start depending on a
+ * package that was refused before.
  *
  * A package this worker only proxies — a plugin published to npm — is a root as well, because the index points at this
  * domain for those too. Its own dependencies are not in KV, so they are resolved upstream like any other.
@@ -118,6 +171,7 @@ async function resolve(name: string, upstream: string): Promise<Readonly<Record<
  * @param hosts - decides whether a name is answered for, which needs no allowance.
  * @param own - reads a package's declared dependencies from local data, or `undefined` when it holds none.
  * @param roots - the packages whose dependencies are reachable.
+ * @param version - the one version the request asks for, or `undefined` for a packument request.
  * @returns whether the request may be proxied.
  */
 export async function allowed(
@@ -127,30 +181,33 @@ export async function allowed(
   hosts: Hosts,
   own: OwnDependencies,
   roots: readonly string[],
+  version?: string,
 ): Promise<boolean> {
   if (hosts(name)) return true
-  const cached = await kv.get(`${ALLOW_PREFIX}${name}`)
-  if (cached !== null) return true
+  // The vendor scope is answered directly rather than walked, for the reason OPEN_SCOPES records.
+  if (openScope(name)) return true
+  if ((await kv.get(`${ALLOW_PREFIX}${name}`)) !== null) return true
   if ((await kv.get(`${DENY_PREFIX}${name}`)) !== null) return false
 
-  // Breadth-first from the hosted packages, so a direct dependency is found before a distant one. `seen` also guards the
-  // walk against a dependency cycle.
+  // Breadth-first from the roots, so a direct dependency is found before a distant one. `seen` also guards the walk
+  // against a dependency cycle.
   const seen = new Set<string>(roots)
   const queue = [...roots]
   let visited = 0
   while (queue.length > 0 && visited < WALK_LIMIT) {
     const current = queue.shift() as string
     visited += 1
-    const local = await own(current)
+    const local = await own(current, current === name ? version : undefined)
     // A package whose manifest is not held locally is resolved upstream; one that is skips the request entirely.
     const dependencies = local ?? dependenciesOf(await resolve(current, upstream))
     for (const dependency of dependencies) {
-      if (dependency === name) {
-        await kv.put(`${ALLOW_PREFIX}${name}`, '1')
-        return true
-      }
       if (seen.has(dependency)) continue
       seen.add(dependency)
+      // Proven reachable, so it is answered from the cache next time without walking again. Recording the path rather
+      // than only the requested package is what keeps a first install fast: pnpm asks for a dependency before its own
+      // dependencies, so each later request finds its answer already cached.
+      await remember(kv, dependency)
+      if (dependency === name) return true
       queue.push(dependency)
     }
   }

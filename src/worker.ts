@@ -18,7 +18,7 @@
  * because the unauthenticated GitHub API allows 60 requests per hour and Workers egress addresses are shared.
  */
 import { HOSTED_KEY, INDEX_KEY, INDEX_PATH, packageOf, route, type RegistryEntry } from './routes.ts'
-import { allowed, dependenciesOf, latestOf, type Hosts, type OwnDependencies, type Resolved } from './allow.ts'
+import { allowed, dependenciesOf, requestedVersion, type Hosts, type OwnDependencies, type Resolved } from './allow.ts'
 
 /** The KV namespace holding, for each converted package, its packument and tarball locations. */
 export interface Env {
@@ -139,12 +139,15 @@ export async function handle(request: Request, env: Env): Promise<Response> {
     const hosts: Hosts = name => hosted.has(name)
     // Only a converted package has a packument in KV, so an npm-published plugin yields `undefined` and the walk asks
     // upstream for its dependencies instead.
-    const own: OwnDependencies = async name => {
+    const own: OwnDependencies = async (name, version) => {
       const entry = await lookup(env.REGISTRY, name)
       if (entry === undefined) return undefined
-      return dependenciesOf(latestOf(entry.packument as Resolved))
+      return dependenciesOf(entry.packument as Resolved, version)
     }
-    if (!(await allowed(found.name, env.REGISTRY, upstream, hosts, own, [...hosted]))) return denied(found.name)
+    const version = requestedVersion(found.name, parts.slice(found.consumed))
+    if (!(await allowed(found.name, env.REGISTRY, upstream, hosts, own, [...hosted], version))) {
+      return denied(found.name)
+    }
     return proxy(request, upstream)
   }
   const decided = route(new URL(request.url), name => (name === found.name ? entry : undefined))

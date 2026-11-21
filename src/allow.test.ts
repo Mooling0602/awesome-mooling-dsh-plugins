@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ALLOW_PREFIX, allowed, DENY_PREFIX, dependenciesOf, latestOf } from './allow.ts'
+import { ALLOW_PREFIX, allowed, DENY_PREFIX, dependenciesOf, openScope, requestedVersion } from './allow.ts'
 
 /** A KV namespace backed by a plain map, enough for the two calls `allowed` makes. */
 function kv(entries: Record<string, unknown> = {}): KVNamespace {
@@ -45,27 +45,53 @@ function serve(packages: Record<string, readonly string[]>): { asked: string[]; 
 
 test('dependenciesOf 合并三个依赖字段', () => {
   const names = dependenciesOf({
-    dependencies: { a: '1' },
-    peerDependencies: { b: '2' },
-    optionalDependencies: { c: '3', a: '1' },
+    'dist-tags': { latest: '1.0.0' },
+    versions: {
+      '1.0.0': {
+        dependencies: { a: '1' },
+        peerDependencies: { b: '2' },
+        optionalDependencies: { c: '3', a: '1' },
+      },
+    },
   })
   // Sorted for a stable comparison; duplicates across fields collapse.
   assert.deepEqual(names.sort(), ['a', 'b', 'c'])
 })
 
+test('dependenciesOf 默认只读 latest', () => {
+  // A walk is a guess about what an install will touch, so it reads the version a plain name resolves to. Reading every
+  // published version instead would pull in the dependencies of long-dead releases.
+  const names = dependenciesOf({
+    'dist-tags': { latest: '1.0.0' },
+    versions: {
+      '1.0.0': { dependencies: { only: '1' } },
+      '0.1.0': { dependencies: { historical: '1' } },
+    },
+  })
+  assert.deepEqual(names, ['only'])
+})
+
+test('dependenciesOf 读指定版本', () => {
+  // A tarball request names its version, and only that version's dependencies can matter for that install.
+  const names = dependenciesOf(
+    {
+      'dist-tags': { latest: '1.0.0' },
+      versions: { '1.0.0': { dependencies: { only: '1' } }, '0.1.0': { dependencies: { historical: '1' } } },
+    },
+    '0.1.0',
+  )
+  assert.deepEqual(names, ['historical'])
+})
+
 test('dependenciesOf 在缺失或非对象时返回空', () => {
   assert.deepEqual(dependenciesOf(undefined), [])
   assert.deepEqual(dependenciesOf({}), [])
-  assert.deepEqual(dependenciesOf({ dependencies: null }), [])
-  assert.deepEqual(dependenciesOf({ dependencies: 'nope' }), [])
-})
-
-test('latestOf 只认 dist-tags.latest 指向的版本', () => {
-  const packument = { 'dist-tags': { latest: '2.0.0' }, versions: { '2.0.0': { name: 'x' }, '1.0.0': {} } }
-  assert.deepEqual(latestOf(packument), { name: 'x' })
-  // Without a usable latest there is nothing to read dependencies from.
-  assert.equal(latestOf({ versions: {} }), undefined)
-  assert.equal(latestOf({ 'dist-tags': { latest: '9.9.9' }, versions: {} }), undefined)
+  assert.deepEqual(dependenciesOf({ versions: {} }), [])
+  assert.deepEqual(dependenciesOf({ 'dist-tags': { latest: '1.0.0' }, versions: { '1.0.0': null as never } }), [])
+  // A packument with no latest tag names no version the walk could read.
+  assert.deepEqual(dependenciesOf({ versions: { '1.0.0': { dependencies: { a: '1' } } } }), [])
+  assert.deepEqual(dependenciesOf({ versions: { '1.0.0': { dependencies: null } } }), [])
+  assert.deepEqual(dependenciesOf({ versions: { '1.0.0': { dependencies: 'nope' } } }), [])
 })
 
 test('托管包本身永远允许，不需要查白名单', async () => {
@@ -201,4 +227,23 @@ test('npm 发布的根包从上游展开依赖', async () => {
   } finally {
     restore()
   }
+})
+
+test('openScope 只放行厂商 scope', () => {
+  assert.equal(openScope('@deepseek-ai/cordis'), true)
+  // Everything else still has to be reachable from a hosted package.
+  assert.equal(openScope('lodash'), false)
+  assert.equal(openScope('@types/node'), false)
+  assert.equal(openScope('dsh-hint-shell'), false)
+})
+
+test('requestedVersion 只认 tarball 文件名', () => {
+  assert.equal(requestedVersion('dsh-x', ['-', 'dsh-x-1.0.0.tgz']), '1.0.0')
+  // A scope is not part of the asset name.
+  assert.equal(requestedVersion('@scope/dsh-y', ['-', 'dsh-y-2.0.0-rc.1.tgz']), '2.0.0-rc.1')
+  // A packument request names no version, and neither does a foreign file.
+  assert.equal(requestedVersion('dsh-x', []), undefined)
+  assert.equal(requestedVersion('dsh-x', ['-', 'other-1.0.0.tgz']), undefined)
+  assert.equal(requestedVersion('dsh-x', ['-', 'dsh-x-1.0.0.zip']), undefined)
+  assert.equal(requestedVersion('dsh-x', ['-', 'dsh-x-.tgz']), undefined)
 })
