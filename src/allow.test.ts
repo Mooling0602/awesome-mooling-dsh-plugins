@@ -268,3 +268,54 @@ test('厂商 scope 的依赖会被记录但不再递归', async () => {
     restore()
   }
 })
+
+test('KV 写入失败时仍然放行', async () => {
+  // The free plan allows a fixed number of writes per day, and a deploy can exhaust it. A full quota must cost the
+  // shortcut, never the request: reads still work, so the walk can still answer.
+  const { restore } = serve({ 'dsh-x': ['zod'] })
+  try {
+    const store: KVNamespace = {
+      async get() {
+        return null
+      },
+      async put() {
+        throw new Error('your account has reached the free usage limit for this operation for today')
+      },
+      async delete() {},
+      async list() {
+        return { keys: [], list_complete: true, cacheStatus: null }
+      },
+    } as unknown as KVNamespace
+    const own = async (name: string): Promise<readonly string[] | undefined> =>
+      name === 'dsh-x' ? ['zod'] : undefined
+    const result = await allowed('zod', store, 'https://up.test', name => name === 'dsh-x', own, ['dsh-x'])
+    assert.equal(result, true)
+  } finally {
+    restore()
+  }
+})
+
+test('KV 写入失败时仍然拒绝', async () => {
+  // The same for a refusal: an unreachable package stays refused when the denial cannot be cached.
+  const { restore } = serve({ 'dsh-x': ['zod'] })
+  try {
+    const store: KVNamespace = {
+      async get() {
+        return null
+      },
+      async put() {
+        throw new Error('quota')
+      },
+      async delete() {},
+      async list() {
+        return { keys: [], list_complete: true, cacheStatus: null }
+      },
+    } as unknown as KVNamespace
+    const own = async (name: string): Promise<readonly string[] | undefined> =>
+      name === 'dsh-x' ? ['zod'] : undefined
+    const result = await allowed('lodash', store, 'https://up.test', name => name === 'dsh-x', own, ['dsh-x'])
+    assert.equal(result, false)
+  } finally {
+    restore()
+  }
+})

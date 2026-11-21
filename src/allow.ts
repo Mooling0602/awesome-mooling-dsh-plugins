@@ -136,11 +136,21 @@ async function resolve(name: string, upstream: string): Promise<Resolved | undef
 
 /**
  * Record a package as reachable, so a later request for it needs no walk.
+ *
+ * A write failure is swallowed on purpose. The record is an optimisation, not the answer: the walk has already decided
+ * that this package may be proxied, and losing the shortcut only means the next request walks again. Letting the write
+ * throw would turn a full KV write quota into a failed request, which is exactly what happened on the free plan, where
+ * the daily write limit is small enough for a busy deploy day to exhaust it. Reads keep working then, so a worker that
+ * ignores the failed write still resolves every package it can walk to.
  * @param kv - the namespace.
  * @param name - the package name.
  */
 async function remember(kv: KVNamespace, name: string): Promise<void> {
-  await kv.put(`${ALLOW_PREFIX}${name}`, '1')
+  try {
+    await kv.put(`${ALLOW_PREFIX}${name}`, '1')
+  } catch {
+    // Nothing to do: the answer is already known, only the shortcut is lost.
+  }
 }
 
 /**
@@ -225,6 +235,12 @@ export async function allowed(
     }
   }
 
-  await kv.put(`${DENY_PREFIX}${name}`, '1', { expirationTtl: DENY_TTL_SECONDS })
+  // A refusal that cannot be remembered still refuses: the walk reached no path here, and caching that is only a saving
+  // for the next caller. Swallowed for the same reason as the grant above.
+  try {
+    await kv.put(`${DENY_PREFIX}${name}`, '1', { expirationTtl: DENY_TTL_SECONDS })
+  } catch {
+    // Nothing to do: the answer is already known, only the shortcut is lost.
+  }
   return false
 }
