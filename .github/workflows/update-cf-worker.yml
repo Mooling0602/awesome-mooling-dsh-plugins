@@ -16,7 +16,7 @@ on:
         description: Worker URL to smoke-test afterwards; leave empty to skip the check
         type: string
         required: false
-        default: ''
+        default: https://mynpm.staringplanet.top
 
 concurrency:
   group: update-cf-worker
@@ -70,14 +70,44 @@ jobs:
           sed -i "s|id = \"KV_NAMESPACE_ID\"|id = \"$KV_NAMESPACE_ID\"|" wrangler.toml
           grep -n 'id = ' wrangler.toml
 
-      # Before the deploy, so the packuments are already readable when the new worker starts answering. A client that
-      # resolves a hosted package mid-deploy would otherwise record a 404 in its lockfile.
-      - name: Upload packuments to KV
+      # The worker caches each proxy decision in KV. Those records are derived data, and a record written by an older
+      # worker can outlive the bug that caused it: a past version refused packages a real install needed, and the
+      # refusals had no expiry. This workflow is run by hand, which is the right moment to pay for a rebuild, because a
+      # delete and a rewrite per record is real write traffic against a small daily quota.
+      #
+      # Skipped together with the packument upload, since both are KV writes and `skip_kv` asks for no KV traffic.
+      - name: Drop cached proxy decisions
         if: inputs.skip_kv == false
-        run: pnpm exec wrangler kv bulk put dists/registry/kv.json --binding REGISTRY --remote
+        run: |
+          pnpm exec wrangler kv key list --binding REGISTRY --remote > "$RUNNER_TEMP/kv-keys.json"
+          node src/registry/build.ts --cache-plan < "$RUNNER_TEMP/kv-keys.json"
+          if [ "$(node -e 'console.log(require("./dists/registry/cache-delete.json").length)')" -gt 0 ]; then
+            pnpm exec wrangler kv bulk delete dists/registry/cache-delete.json --binding REGISTRY --remote --force
+          else
+            echo 'no cached decisions to drop'
+          fi
 
+      # The worker goes out first, then its data.
+      #
+      # Uploading first was the original order, so that a new worker never answered before the packuments it serves were
+      # in place. A day of deploys against the free plan exhausted the daily KV write quota, though, and because the
+      # upload came first, no worker change could ship at all, including a fix that had nothing to do with KV. A worker
+      # whose data is one release stale is a working worker: the previous packuments are still in KV and still resolve.
+      # A worker that cannot deploy is not.
       - name: Deploy worker
         run: pnpm exec wrangler deploy
+
+      # A failure here must fail the run. The free plan caps how many KV writes an account may make per day, so an
+      # exhausted quota is a real operational fault: a plugin version published in this run is not served, and leaving
+      # the run green would hide that. The cause is named explicitly instead, so the fix is obvious without reading
+      # wrangler output.
+      - name: Upload packuments to KV
+        if: inputs.skip_kv == false
+        run: |
+          if ! pnpm exec wrangler kv bulk put dists/registry/kv.json --binding REGISTRY --remote; then
+            echo '::error title=Packument upload failed::The registry data was not published. If the log above says the free usage limit was reached, the account has exhausted its daily KV write quota (Cloudflare error 10048). The worker is already deployed and still serves the packuments from the previous run, so existing plugins keep installing, but this release is incomplete. Re-run this workflow once the quota resets.'
+            exit 1
+          fi
 
       # A deploy that leaves the registry unreachable is worth failing on here rather than discovering it from a user's
       # failed install.
