@@ -68,6 +68,24 @@ Throughout all of this, `dists/` never enters version control: it is a build pro
 
 Nothing in the index build asks the worker what to list. That matters for the first deploy: the worker cannot exist before it is deployed, and an index that queried the worker for its own inputs could never be built for that first deploy. Every input comes from GitHub or npms, both reachable before the worker exists.
 
+### What an exhausted write quota actually breaks
+
+The free plan caps KV writes per day. Reaching that cap fails the upload step, and the run goes red rather than green, because a release that did not publish must not look successful. The blast radius is narrower than the red run suggests:
+
+| Operation | Quota exhausted |
+| --- | --- |
+| Reading a packument already in KV | works |
+| Following a tarball redirect | works |
+| Installing a version already published | works |
+| Installing a version released in this run | fails |
+| Installing a plugin added in this run | fails, with 404 |
+
+The quota governs writes only, and reads are unaffected, so everything already in KV keeps being served. What breaks is precisely what did not get written: a new plugin, or a new version of an existing one. A client asking for a package the worker does not host is not proxied to npmjs either, because proxying is limited to the dependencies of hosted packages; the answer is a plain 404. That is why the failure looks like "this plugin will not install" rather than "this installed something else".
+
+The index is not affected at all, since it ships inside the worker script and was already deployed by the time the upload step ran. Users see the new index listing a plugin whose packument did not arrive, which is the one inconsistency worth knowing about: the listing and the installability can disagree for the rest of that day.
+
+Re-running the workflow once the quota resets completes the release. Nothing needs to be undone first, because the upload overwrites the same keys.
+
 ### Why not distribute through npmjs
 
 Publishing the converted packages to npmjs would let a third party take over a package of the same name, and could not guarantee that the package we produce matches the version our index describes. Running our own registry keeps the source, version and integrity of every package under this repository's CI, with no way for a third party to interfere.
