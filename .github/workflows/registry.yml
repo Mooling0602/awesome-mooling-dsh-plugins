@@ -83,7 +83,6 @@ jobs:
       # The listing is filtered by `--cache-plan`, so only decision records are removed and the packuments stay.
       - name: Drop cached proxy decisions
         if: github.event_name == 'workflow_dispatch'
-        continue-on-error: true
         run: |
           pnpm exec wrangler kv key list --binding REGISTRY --remote > "$RUNNER_TEMP/kv-keys.json"
           node src/registry/build.ts --cache-plan < "$RUNNER_TEMP/kv-keys.json"
@@ -103,17 +102,17 @@ jobs:
       - name: Deploy worker
         run: pnpm exec wrangler deploy
 
-      # A failure here does not fail the run, for the same reason. The quota resets on its own, so the response is to
-      # keep serving what KV already holds and upload again later, not to abandon a release that is already live.
+      # A failure here must fail the run. The free plan caps how many KV writes an account may make per day, so an
+      # exhausted quota is a real operational fault: plugins published in this run are not served, and leaving the run
+      # green would hide that. The cause is named explicitly instead, so the fix is obvious without reading wrangler
+      # output.
       - name: Upload packuments to KV
         id: upload
-        continue-on-error: true
-        run: pnpm exec wrangler kv bulk put dists/registry/kv.json --binding REGISTRY --remote
-
-      - name: Report stale registry data
-        if: steps.upload.outcome == 'failure'
         run: |
-          echo '::warning title=Registry data is stale::The packument upload failed, most likely because the free plan daily KV write quota is exhausted. The worker still deployed. Existing plugins keep resolving from the packuments already in KV, but a version or plugin published in this run is not served until a later run uploads successfully. Re-run this workflow once the quota resets.'
+          if ! pnpm exec wrangler kv bulk put dists/registry/kv.json --binding REGISTRY --remote; then
+            echo '::error title=Packument upload failed::The registry data was not published. If the log above says the free usage limit was reached, the account has exhausted its daily KV write quota (Cloudflare error 10048). The worker is already deployed and still serves the packuments from the previous run, so existing plugins keep installing, but this release is incomplete. Re-run this workflow once the quota resets.'
+            exit 1
+          fi
 
   index:
     name: Build index
@@ -152,4 +151,8 @@ jobs:
           grep -n 'id = ' wrangler.toml
 
       - name: Publish index to KV
-        run: pnpm exec wrangler kv key put __index__ --path dists/index.json --binding REGISTRY --remote
+        run: |
+          if ! pnpm exec wrangler kv key put __index__ --path dists/index.json --binding REGISTRY --remote; then
+            echo '::error title=Index upload failed::The market index was not published. If the log above says the free usage limit was reached, the account has exhausted its daily KV write quota (Cloudflare error 10048). The registry still serves the previous index, which may not list plugins added in this run. Re-run this workflow once the quota resets.'
+            exit 1
+          fi
