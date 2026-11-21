@@ -30,8 +30,17 @@ export interface Manifest {
 /** One version to publish, paired with the tarball that installs it. */
 export interface TarballVersion {
   readonly manifest: Manifest
-  /** Absolute URL npm clients download this version from. */
+  /** The release asset the bytes actually live at, which the worker forwards to. */
   readonly tarball: string
+  /**
+   * What `dist.tarball` advertises to a client.
+   *
+   * This repository's own registry, not the asset URL. A client writes `dist.tarball` into its lockfile verbatim, so
+   * advertising the asset URL pins every install to GitHub — the very origin this registry exists to keep clients off,
+   * and one that is unreachable from the networks it serves. Advertising the registry keeps the lockfile portable and
+   * lets the worker forward the download.
+   */
+  readonly download: string
   readonly integrity: Integrity
   /**
    * When the version was published.
@@ -87,7 +96,7 @@ export function versionRecord(entry: TarballVersion): Record<string, unknown> {
     name: entry.manifest.name,
     version: entry.manifest.version,
     dist: {
-      tarball: entry.tarball,
+      tarball: entry.download,
       integrity: entry.integrity.integrity,
       shasum: entry.integrity.shasum,
     },

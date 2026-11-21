@@ -140,3 +140,19 @@ export function versionOfAsset(file: string, name: string): string | undefined {
   const version = file.slice(prefix.length, -'.tgz'.length)
   return version === '' ? undefined : version
 }
+
+/**
+ * The URL a client is told to download one version from.
+ *
+ * The inverse of {@link versionOfAsset}, so the address advertised in `dist.tarball` is exactly the one {@link route}
+ * answers. It points at this registry rather than at the release asset: a client copies `dist.tarball` into its
+ * lockfile, so an asset URL there would pin every install to GitHub instead of letting the worker forward it.
+ * @param registry - the registry base URL, trailing slash included.
+ * @param name - the package name.
+ * @param version - the version to address.
+ * @returns the download URL.
+ */
+export function tarballUrl(registry: string, name: string, version: string): string {
+  const base = name.startsWith('@') ? name.slice(name.indexOf('/') + 1) : name
+  return `${registry}${name}/-/${base}-${version}.tgz`
+}

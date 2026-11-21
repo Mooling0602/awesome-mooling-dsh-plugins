@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { packageOf, route, versionOfAsset, type RegistryEntry } from './routes.ts'
+import { packageOf, route, tarballUrl, versionOfAsset, type RegistryEntry } from './routes.ts'
 
 const ENTRIES: Record<string, RegistryEntry> = {
   'dsh-x': {
@@ -109,4 +109,22 @@ test('versionOfAsset 拒绝不符的文件名', () => {
   assert.equal(versionOfAsset('other-1.0.0.tgz', 'dsh-x'), undefined)
   assert.equal(versionOfAsset('dsh-x-1.0.0.zip', 'dsh-x'), undefined)
   assert.equal(versionOfAsset('dsh-x-.tgz', 'dsh-x'), undefined)
+})
+
+test('tarballUrl 生成的地址就是 route 应答的地址', () => {
+  // The advertised `dist.tarball` and the path `route` answers have to be the same string, or a client follows the
+  // packument to an address the worker does not recognise and every install fails.
+  const url = tarballUrl('https://reg.example/', 'dsh-x', '1.0.0')
+  assert.equal(url, 'https://reg.example/dsh-x/-/dsh-x-1.0.0.tgz')
+  const entries = new Map([['dsh-x', { packument: {}, tarballs: { '1.0.0': { tarball: 'https://github.com/x.tgz' } } }]])
+  const decision = route(new URL(url), name => entries.get(name))
+  assert.equal(decision.kind, 'download')
+  assert.equal(decision.kind === 'download' ? decision.version : undefined, '1.0.0')
+})
+
+test('tarballUrl 把 scoped 包的斜杠留在路径里而不是文件名里', () => {
+  // `@scope/name` occupies two path segments, so the asset file itself carries only `name`.
+  const url = tarballUrl('https://reg.example/', '@scope/dsh-x', '1.0.0')
+  assert.equal(url, 'https://reg.example/@scope/dsh-x/-/dsh-x-1.0.0.tgz')
+  assert.equal(versionOfAsset('dsh-x-1.0.0.tgz', '@scope/dsh-x'), '1.0.0')
 })

@@ -5,7 +5,8 @@ import { abridge, buildPackument, versionRecord, type TarballVersion } from './p
 function entry(version: string, overrides: Partial<TarballVersion['manifest']> = {}): TarballVersion {
   return {
     manifest: { name: 'dsh-x', version, license: 'MIT', ...overrides },
-    tarball: `https://reg.example/dsh-x/-/dsh-x-${version}.tgz`,
+    tarball: `https://github.com/x/dsh-x/releases/download/${version}/dsh-x-${version}.tgz`,
+    download: `https://reg.example/dsh-x/-/dsh-x-${version}.tgz`,
     integrity: { integrity: `sha512-${version}`, shasum: 'a'.repeat(40) },
     published: '2026-01-01T00:00:00.000Z',
   }

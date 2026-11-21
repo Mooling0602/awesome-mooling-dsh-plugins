@@ -30,7 +30,7 @@ import { needsConversion } from '../sources.ts'
 import { downloadableVersions, repositoryPath, type Release } from '../releases.ts'
 import { integrityOf, type Integrity } from '../integrity.ts'
 import { buildPackument, type Packument, type TarballVersion } from '../packument.ts'
-import { HOSTED_KEY } from '../routes.ts'
+import { HOSTED_KEY, tarballUrl } from '../routes.ts'
 import { cacheKeys } from './cache.ts'
 
 /** Repository root, one level above `src/`. */
@@ -41,6 +41,13 @@ export const OUTPUT = join(ROOT, 'dists', 'registry')
 
 /** User agent GitHub's API asks clients to send. */
 const USER_AGENT = 'awesome-mooling-dsh-plugins'
+
+/**
+ * This repository's own registry, as a client sees it.
+ *
+ * Written into `dist.tarball` so a lockfile records a portable, reachable origin instead of the release asset.
+ */
+const REGISTRY = 'https://mynpm.staringplanet.top/'
 
 /** One package as the worker needs it: its packument plus where each version's bytes live. */
 export interface ManifestEntry {
@@ -163,7 +170,16 @@ export async function buildEntry(
     const manifest = await readManifest(bytes)
     // The release page segment is the release tag, which need not equal the version: a tag may carry a `v` prefix.
     // `browser_download_url` already names the right asset, so it is used verbatim instead of being rebuilt.
-    versions.push({ manifest, tarball: candidate.tarball, integrity, published: candidate.published })
+    //
+    // `tarball` stays the asset URL, because the worker forwards to it; `download` is what the packument advertises, so a
+    // client records this registry in its lockfile rather than GitHub.
+    versions.push({
+      manifest,
+      tarball: candidate.tarball,
+      download: tarballUrl(REGISTRY, plugin.package, candidate.version),
+      integrity,
+      published: candidate.published,
+    })
     urls[candidate.version] = candidate.tarball
     integrities[candidate.version] = integrity.integrity
   }
