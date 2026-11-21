@@ -169,27 +169,31 @@ test('多个包各自从 KV 读取', async () => {
   assert.equal(body.name, 'dsh-web-file-uploader')
 })
 
-test('索引从 KV 的 __index__ 键返回，且不走代理', async () => {
-  const index = { title: 'awesome-mooling-dsh-plugins', plugins: [{ name: 'dsh-hint-shell' }] }
-  const { response, proxied } = await request('https://reg.test/dsh-plugins/index.json', { __index__: index })
+test('索引来自打包进脚本的模块，且不走代理', async () => {
+  // The index ships with the worker rather than living in KV, so publishing it costs a deploy and no KV write.
+  const { response, proxied } = await request('https://reg.test/dsh-plugins/index.json', {})
   assert.equal(response.status, 200)
-  assert.deepEqual(await response.json(), index)
+  const body = (await response.json()) as { format: number; plugins: unknown[] }
+  assert.equal(body.format, 1)
+  assert.ok(Array.isArray(body.plugins))
   assert.deepEqual(proxied, [])
 })
 
 test('索引带缓存头', async () => {
-  const { response } = await request('https://reg.test/dsh-plugins/index.json', { __index__: { plugins: [] } })
+  const { response } = await request('https://reg.test/dsh-plugins/index.json', {})
   assert.match(response.headers.get('cache-control') ?? '', /max-age=300/u)
 })
 
-test('索引未发布时 404 且不缓存', async () => {
-  const { response, proxied } = await request('https://reg.test/dsh-plugins/index.json', {})
-  assert.equal(response.status, 404)
-  assert.equal(response.headers.get('cache-control'), null)
-  const body = (await response.json()) as { error: string }
-  assert.match(body.error, /not been published/u)
-  assert.deepEqual(proxied, [])
+test('索引不读 KV', async () => {
+  // A KV entry left over from the previous design must not be served: the bundled module is the only source now.
+  const { response } = await request('https://reg.test/dsh-plugins/index.json', {
+    __index__: { title: 'stale', plugins: [] },
+  })
+  const body = (await response.json()) as { title: string }
+  assert.notEqual(body.title, 'stale')
 })
+
+
 
 test('索引路径不会被当成包名代理', async () => {
   // Guards the ordering in `handle`: routing the path as a package would proxy it, and no such npm package exists.

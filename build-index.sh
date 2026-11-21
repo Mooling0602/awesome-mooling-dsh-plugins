@@ -1,63 +1,21 @@
 #!/usr/bin/env bash
+# Write the plugin market index.
+#
+# This used to clone the harness, install the harness' own generator, and run it with `--registry` pointing at the
+# deployed CloudFlare Workers registry. That made the index depend on the worker while the worker compiles the index in,
+# so neither could be built first. The index's real inputs are this repository's metadata and GitHub, both of which are
+# reachable without the worker, and `src/index/build.ts` reads them directly.
+#
+# Kept as a script rather than dropped: CI calls it by name, and it keeps the entry point in one place if a build step
+# is ever needed again.
 set -euo pipefail
 
-TITLE=${TITLE:-awesome-mooling-dsh-plugins}
-# The CF Workers registry that republishes the plugins dispatched as release tarballs. Every npm-source entry in the
-# index points at it, and it proxies anything it has not converted back to registry.npmjs.org. CI overrides this from the
-# `REGISTRY_URL` repository variable so the default can change without touching the workflow.
-REGISTRY=${REGISTRY:-https://mynpm.staringplanet.top}
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-REPO=https://github.com/deepseek-ai/deepseek-harness.git
-WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
 
-read_version() {
-  curl -fsS --max-time 30 "$1" | node -e '
-let raw = ""
-process.stdin.on("data", (chunk) => { raw += chunk })
-process.stdin.on("end", () => process.stdout.write(JSON.parse(raw).version + "\n"))
-'
-}
-
-VERSION=${DSH_VERSION:-$(read_version https://registry.npmjs.org/@deepseek-ai%2Fdsh/latest)}
-
-if ! curl -fsS --max-time 30 -o /dev/null "https://registry.npmjs.org/@deepseek-ai%2Fdsh-plugin-market-index/$VERSION"; then
-  echo "error: @deepseek-ai/dsh-plugin-market-index@$VERSION is not published on npm" >&2
-  exit 1
-fi
-if ! git ls-remote --exit-code --tags "$REPO" "refs/tags/dsh-v$VERSION" >/dev/null; then
-  echo "error: tag dsh-v$VERSION does not exist in $REPO" >&2
+# The packuments are what a tarball-form plugin's versions are read from, so the registry build has to have run first.
+if [[ ! -d "$ROOT/dists/registry/packuments" ]]; then
+  echo 'error: dists/registry/packuments is missing; run `pnpm registry` first' >&2
   exit 1
 fi
 
-echo "dsh $VERSION"
-
-git -c advice.detachedHead=false clone --quiet --depth 1 --filter=blob:none --sparse \
-  --branch "dsh-v$VERSION" "$REPO" "$WORK/harness"
-git -C "$WORK/harness" sparse-checkout set apps/plugin-market-generator
-cp -r "$WORK/harness/apps/plugin-market-generator" "$WORK/gen"
-
-node - "$WORK/gen/package.json" "$VERSION" <<'JS'
-const fs = require('node:fs')
-const [file, version] = process.argv.slice(2)
-const pkg = JSON.parse(fs.readFileSync(file, 'utf8'))
-for (const field of ['dependencies', 'devDependencies']) {
-  for (const [name, range] of Object.entries(pkg[field] ?? {})) {
-    if (range.startsWith('workspace:')) pkg[field][name] = version
-  }
-}
-fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + '\n')
-JS
-
-cd "$WORK/gen"
-npm install --no-audit --no-fund --workspaces=false --fetch-retries=3 --cache "$WORK/npm-cache" >/dev/null
-
-# dists/plugins.txt is a build artifact; regenerate it from plugins/by-name/ so the index never reads stale input.
-node "$ROOT/src/sources/build.ts"
-
-npx tsx src/bin.ts \
-  --input "$ROOT/dists/plugins.txt" \
-  --output "$ROOT/dists/index.json" \
-  --title "$TITLE" \
-  --registry "$REGISTRY" \
-  --cache "$WORK/cache"
+node "$ROOT/src/index/build.ts"

@@ -47,15 +47,23 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - run: pnpm check
-      - run: pnpm test
-
       # Reads each plugin's release assets, computes the tarball integrity from the exact bytes, and writes the
       # packuments plus the KV bulk file. The token keeps this inside the GitHub API rate limit.
+      #
+      # This runs before the checks because the index is built from these packuments, and the worker imports the index,
+      # so `pnpm check` cannot type-check the worker until both exist.
       - name: Build registry data
         run: pnpm registry
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Always rebuilt here rather than reused: a stale index would make the checks below run against data CI did not
+      # just produce.
+      - name: Build index
+        run: ./build-index.sh
+
+      - run: pnpm check
+      - run: pnpm test
 
       - name: Verify the worker bundles
         run: pnpm exec wrangler deploy --dry-run --outdir "$RUNNER_TEMP/worker"
@@ -132,16 +140,21 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Clones the harness at the matching tag, then regenerates dists/plugins.txt and dists/index.json. Every npm-form
-      # entry it writes points at the registry published by the job above, which is why this job runs second.
+      # The index is built from the packuments, so this job produces them again rather than depending on the job above
+      # for a file tree, which is not shared between jobs.
+      - name: Build registry data
+        run: pnpm registry
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Reads this repository's metadata and GitHub directly. The registry address it records in each npm-form entry is
+      # a constant in the generator, so nothing here asks the deployed worker what to list.
       - name: Build index
         run: ./build-index.sh
-        env:
-          REGISTRY: ${{ vars.REGISTRY_URL }}
 
-      # The index is served by the same worker that serves the packuments, so a client fetches both from one host and
-      # the index cannot go stale in a checked-in file. Writing it is a plain KV put: the worker reads the key per
-      # request, so publishing needs no redeploy.
+      - run: pnpm check
+      - run: pnpm test
+
       - name: Point the config at the namespace
         env:
           KV_NAMESPACE_ID: ${{ secrets.KV_NAMESPACE_ID }}
@@ -150,9 +163,17 @@ jobs:
           sed -i "s|id = \"KV_NAMESPACE_ID\"|id = \"$KV_NAMESPACE_ID\"|" wrangler.toml
           grep -n 'id = ' wrangler.toml
 
-      - name: Publish index to KV
+      - name: Verify the worker bundles
+        run: pnpm exec wrangler deploy --dry-run --outdir "$RUNNER_TEMP/worker"
+
+      # The index ships inside the worker script, so publishing it is a deploy. That is the point: a KV write shared the
+      # small daily write quota with the packuments, and a day that exhausted the quota left users on the previous index
+      # even though the new one had been computed correctly.
+      #
+      # A failure here means users still see the previous index, so it must fail the run instead of leaving it green.
+      - name: Deploy worker
         run: |
-          if ! pnpm exec wrangler kv key put __index__ --path dists/index.json --binding REGISTRY --remote; then
-            echo '::error title=Index upload failed::The market index was not published. If the log above says the free usage limit was reached, the account has exhausted its daily KV write quota (Cloudflare error 10048). The registry still serves the previous index, which may not list plugins added in this run. Re-run this workflow once the quota resets.'
+          if ! pnpm exec wrangler deploy; then
+            echo '::error title=Index deploy failed::The market index was not published. It ships inside the worker script, so a failed deploy leaves the previous index live. Re-run this workflow.'
             exit 1
           fi

@@ -59,11 +59,14 @@ Those cached records are derived data, so every deploy drops and rebuilds them (
 Each CI run does the following.
 
 1. Build the registry data. Read the GitHub release assets of every `dispatch-type: tarball` plugin, compute integrity from the exact tarball bytes, and generate the matching packuments and tarball redirect table.
-2. Write the packuments to KV in bulk first, then deploy the worker. The order cannot be reversed: otherwise, at the instant the deploy switches over, a client resolving a hosted package receives a 404 and records it in its own lockfile.
-3. After the deploy, `build-index.sh` sparse-clones the DSH source repository at the matching version and produces `dists/index.json` with the index generator from it. Every npm-form entry points at this repository's own registry address.
-4. The index is written to the `__index__` KV key. The worker re-reads that key on every request, so publishing a new index needs no redeploy.
+2. Build the index with `build-index.sh`, which runs `src/index/build.ts`. This reads this repository's metadata and then, per dispatch type, the GitHub release API, the npmjs registry, or a plugin's own Git history. Every npm-form entry records this repository's own registry address, so a client installs through the proxy even though the version list was read from GitHub.
+3. Write the packuments to KV in bulk, then deploy the worker. The order cannot be reversed: otherwise, at the instant the deploy switches over, a client resolving a hosted package receives a 404 and records it in its own lockfile.
 
-Throughout all of this, `dists/` never enters version control: it is a build product, and KV is the single source of truth. That also avoids the noise commits of "update the generated file" on every change.
+The index itself is not a KV record. It is compiled into the worker script, so it reaches users through the same deploy that publishes the packuments, and refreshing it costs no KV write. That is deliberate: a KV write shared the small daily write quota with the packument upload, and a day that exhausted the quota left users on the previous index even though the new one had been computed correctly. A stale index is still possible, but only for as long as a deploy is failing, which is visible, rather than for as long as a quota stays exhausted, which is not.
+
+Throughout all of this, `dists/` never enters version control: it is a build product. That also avoids the noise commits of "update the generated file" on every change. `src/index/ensure.ts` regenerates the index on demand when a local checkout does not have it yet, which is what lets `pnpm check` and `pnpm test` work on a fresh clone without committing it.
+
+Nothing in the index build asks the worker what to list. That matters for the first deploy: the worker cannot exist before it is deployed, and an index that queried the worker for its own inputs could never be built for that first deploy. Every input comes from GitHub or npms, both reachable before the worker exists.
 
 ### Why not distribute through npmjs
 

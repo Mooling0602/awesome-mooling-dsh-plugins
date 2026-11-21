@@ -59,11 +59,14 @@ DSH 的插件索引格式中，一个版本只有两种来源：npm 包，或 gi
 每一轮 CI 的步骤如下。
 
 1. 构建 registry 数据。读取每个 `dispatch-type: tarball` 插件的 GitHub release 资产，按 tarball 的实际字节计算 integrity，生成对应的 packument 和 tarball 重定向表。
-2. 先把 packument 批量写入 KV，再部署 Workers。顺序不能反，否则在部署切换的瞬间，客户端解析托管包会拿到 404 并把它记进自己的 lockfile。
-3. 部署完成后，`build-index.sh` 会稀疏克隆对应版本的 DSH 源码仓库，用其中的索引生成器产出 `dists/index.json`。凡是 npm 形式的条目，都指向本仓库自己的 registry 地址。
-4. 索引写入 KV 的 `__index__` 键。Workers 每次请求都重新读取该键，因此发布新索引不需要重新部署。
+2. 用 `build-index.sh` 构建索引，它调用 `src/index/build.ts`。这个脚本先读本仓库的元数据，再按 dispatch 类型分别读 GitHub release API、npmjs 源，或插件自己的 Git 历史。凡是 npm 形式的条目，都记录本仓库自己的 registry 地址，所以版本列表虽然读自 GitHub，客户端安装时仍然走代理。
+3. 先把 packument 批量写入 KV，再部署 Workers。顺序不能反，否则在部署切换的瞬间，客户端解析托管包会拿到 404 并把它记进自己的 lockfile。
 
-全过程中 `dists/` 都不会进入版本库：它是构建产物，KV 才是唯一的事实来源。这样也避免了“每次更新都要提交一个生成文件”的噪音提交。
+索引本身不是 KV 记录，而是编译进 Workers 脚本的。它和 packument 一起随部署到达用户，刷新索引不消耗任何 KV 写入。这是有意的：KV 写入原本要和 packument 上传共用很小的每日配额，某天配额耗尽时，新索引明明算对了，用户却仍然停在旧索引上。现在索引仍可能过期，但只会在部署失败期间过期——那是看得见的——而不是在配额耗尽的整段时间里过期，那是看不见的。
+
+全过程中 `dists/` 都不会进入版本库：它是构建产物。这样也避免了“每次更新都要提交一个生成文件”的噪音提交。本地检出还没有索引时，`src/index/ensure.ts` 会按需生成它，`pnpm check` 和 `pnpm test` 因此在全新克隆上也能直接跑。
+
+索引的构建过程不问 Workers 该列哪些插件。这对首次部署很关键：Workers 还没部署时并不存在，一个要靠 Workers 提供输入的索引永远没法为那次部署构建出来。所有输入都来自 GitHub 或 npmjs，这些在 Workers 存在之前就能访问。
 
 ### 为什么不走 npmjs 分发
 

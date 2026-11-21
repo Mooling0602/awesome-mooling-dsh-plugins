@@ -6,16 +6,19 @@
   "type": "module",
   "scripts": {
     "prepare": "git config core.hooksPath .githooks || true",
-    "test": "node --test",
-    "check": "tsc --noEmit",
+    "test": "node src/index/ensure.ts && node --test",
+    "check": "node src/index/ensure.ts && tsc --noEmit",
     "registry": "node src/registry/build.ts",
     "sources": "node src/sources/build.ts",
     "readme": "node src/readme/build.ts",
     "deploy": "wrangler deploy",
-    "dev": "wrangler dev"
+    "dev": "wrangler dev",
+    "index": "node src/index/build.ts",
+    "index:ensure": "node src/index/ensure.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261121.1",
+    "@deepseek-ai/dsh-plugin-market-index": "0.2.1-alpha.4",
     "@types/node": "^26.6.6",
     "typescript": "^5.9.3",
     "wrangler": "^4.166.0",

@@ -16,14 +16,6 @@
 export const INDEX_PATH = '/dsh-plugins/index.json'
 
 /**
- * The KV key the index is stored under.
- *
- * A package name cannot collide with it, because no valid npm name starts with two underscores, so the same namespace
- * safely holds the index and every packument.
- */
-export const INDEX_KEY = '__index__'
-
-/**
  * The KV key listing every hosted package name.
  *
  * The worker reads it to decide whether an unhosted package may still be proxied, which is only true when a hosted
