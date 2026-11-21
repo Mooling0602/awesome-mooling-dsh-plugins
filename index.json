@@ -64,6 +64,190 @@
           "npm_weekly_downloads": 424
         }
       }
+    },
+    {
+      "name": "dsh-hint-shell",
+      "title": {
+        "en": "Shell hint (dsh-hint-shell)",
+        "zh": "Shell 提示 (dsh-hint-shell)"
+      },
+      "description": {
+        "en": "Turns ! into a shell prefix in the composer: runs the command and echoes its result, plus a configurable command length cap.",
+        "zh": "把 ! 变成输入框里的 shell 前缀：直接执行命令并回显结果，同时提供命令长度上限配置。"
+      },
+      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJjdXJyZW50Q29sb3IiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIiBhcmlhLWhpZGRlbj0idHJ1ZSI+CiAgPHJlY3QgeD0iMyIgeT0iNSIgd2lkdGg9IjE4IiBoZWlnaHQ9IjE0IiByeD0iMyIgLz4KICA8cGF0aCBkPSJNNy41IDEwLjUgMTAgMTNsLTIuNSAyLjUiIC8+CiAgPHBhdGggZD0iTTEyLjUgMTUuNWg0IiAvPgo8L3N2Zz4K",
+      "author": "Mooling0602",
+      "homepage": "https://github.com/Mooling0602/dsh-hint-shell",
+      "repository": {
+        "url": "https://github.com/Mooling0602/dsh-hint-shell"
+      },
+      "metadata": {
+        "keywords": [
+          "dsh",
+          "deepseek-harness",
+          "plugin",
+          "cordis",
+          "composer",
+          "hint",
+          "shell"
+        ]
+      },
+      "versions": [
+        {
+          "version": "0.1.1",
+          "publishTimestamp": 1794315738,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/Mooling0602/dsh-hint-shell",
+            "commit": "eff7f349bcd34d3687f10e485bca7136d97cab69"
+          },
+          "engines": {
+            "dsh": "^0.2.1-rc.1"
+          }
+        },
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1793436509,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/Mooling0602/dsh-hint-shell",
+            "commit": "40b364de7f8b4ccc266a756add812de6615aa37e"
+          },
+          "engines": {
+            "dsh": "^0.2.1-rc.1"
+          }
+        }
+      ]
+    },
+    {
+      "name": "dsh-web-file-uploader",
+      "title": "dsh-web-file-uploader",
+      "description": "A DeepSeek-style paperclip attach button in the DSH web composer; uploads files to the DSH host (model-aware: native image blocks for multimodal models, file paths for text-only models).",
+      "homepage": "https://github.com/Mooling0602/dsh-web-file-uploader#readme",
+      "repository": {
+        "url": "https://github.com/Mooling0602/dsh-web-file-uploader"
+      },
+      "metadata": {
+        "keywords": [
+          "dsh",
+          "deepseek-harness",
+          "plugin",
+          "cordis",
+          "web",
+          "upload",
+          "attachment"
+        ]
+      },
+      "versions": [
+        {
+          "version": "1.0.0-rc.3",
+          "publishTimestamp": 1793854674,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/Mooling0602/dsh-web-file-uploader",
+            "commit": "bc611282c45ed8d296d69bff14d61802b7f31ac2"
+          }
+        },
+        {
+          "version": "1.0.0-rc.2",
+          "publishTimestamp": 1792495335,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/Mooling0602/dsh-web-file-uploader",
+            "commit": "c41f8590355d4c61d4d9d2a62f512a341cb62b88"
+          }
+        },
+        {
+          "version": "1.0.0-rc.1",
+          "publishTimestamp": 1792318088,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/Mooling0602/dsh-web-file-uploader",
+            "commit": "bce3ef4c3f903113cf643f0c35065d3852e1f272"
+          }
+        },
+        {
+          "version": "1.0.0-alpha.5",
+          "publishTimestamp": 1792249101,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/Mooling0602/dsh-web-file-uploader",
+            "commit": "e2d84d424b47606661e6e0bfb09ac57c1807a920"
+          }
+        },
+        {
+          "version": "1.0.0-alpha.4",
+          "publishTimestamp": 1792237266,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/Mooling0602/dsh-web-file-uploader",
+            "commit": "6df7d7b2c403f2f15db5b4af3d698e409ab1c009"
+          }
+        },
+        {
+          "version": "1.0.0-alpha.3",
+          "publishTimestamp": 1792230877,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/Mooling0602/dsh-web-file-uploader",
+            "commit": "f3ab6d6e0268b563dbc26cc71c35fb5f65de7c7a"
+          }
+        },
+        {
+          "version": "1.0.0-alpha.2",
+          "publishTimestamp": 1792228426,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/Mooling0602/dsh-web-file-uploader",
+            "commit": "2040ec9d37015283cc29293fc263203395be9ed3"
+          }
+        },
+        {
+          "version": "1.0.0-alpha.1",
+          "publishTimestamp": 1791897097,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/Mooling0602/dsh-web-file-uploader",
+            "commit": "bd62c7e736b73c4710cfa37a53c19c3b51560d38"
+          }
+        },
+        {
+          "version": "0.4.3",
+          "publishTimestamp": 1790394615,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/Mooling0602/dsh-web-file-uploader",
+            "commit": "8f8fe5c25e76c6a17b29c36a32b20c1659fb6871"
+          }
+        },
+        {
+          "version": "0.4.2",
+          "publishTimestamp": 1790393755,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/Mooling0602/dsh-web-file-uploader",
+            "commit": "91e8b5e91250e38e6187a94ba49c00e951da78bd"
+          }
+        },
+        {
+          "version": "0.4.1",
+          "publishTimestamp": 1790390955,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/Mooling0602/dsh-web-file-uploader",
+            "commit": "68ed2437e475be75077a076cba5cd18f77d03f01"
+          }
+        },
+        {
+          "version": "0.4.0",
+          "publishTimestamp": 1789053057,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/Mooling0602/dsh-web-file-uploader",
+            "commit": "63d474b2a3aea6b880a6c7f36aa7a1d0680a38a6"
+          }
+        }
+      ]
     }
   ]
 }
