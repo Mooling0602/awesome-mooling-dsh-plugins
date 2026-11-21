@@ -1,0 +1,111 @@
+name: update-cf-worker
+
+# Manually republish the CF Workers registry that serves the plugins dispatched as release tarballs.
+#
+# Run this from Actions → update-cf-worker → Run workflow when the worker, its KV data, or the `tarball` plugins change
+# and no index rebuild is wanted. It deploys by itself and never touches `dists/index.json`, so it cannot leave a
+# half-written index behind.
+on:
+  workflow_dispatch:
+    inputs:
+      skip_kv:
+        description: Deploy only the worker, leaving KV as it is
+        type: boolean
+        default: false
+      registry_url:
+        description: Worker URL to smoke-test afterwards; leave empty to skip the check
+        type: string
+        required: false
+        default: ''
+
+concurrency:
+  group: update-cf-worker
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+jobs:
+  update:
+    name: Update worker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm check
+      - run: pnpm test
+
+      # Rebuilt from the current `plugins/` tree on every run: a tarball plugin that released a new version since the
+      # last deploy gets its packument refreshed here, so deploying the worker and refreshing KV cannot drift apart.
+      - name: Build registry data
+        run: pnpm registry
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify the worker bundles
+        run: pnpm exec wrangler deploy --dry-run --outdir "$RUNNER_TEMP/worker"
+
+      # wrangler does not expand `${...}` in wrangler.toml, so the namespace id is written into it here. The committed
+      # file keeps the placeholder, which means a checkout can never deploy over the wrong namespace by accident.
+      - name: Point the config at the namespace
+        env:
+          KV_NAMESPACE_ID: ${{ secrets.KV_NAMESPACE_ID }}
+        run: |
+          test -n "$KV_NAMESPACE_ID" || { echo 'KV_NAMESPACE_ID is not set' >&2; exit 1; }
+          sed -i "s|id = \"KV_NAMESPACE_ID\"|id = \"$KV_NAMESPACE_ID\"|" wrangler.toml
+          grep -n 'id = ' wrangler.toml
+
+      # Before the deploy, so the packuments are already readable when the new worker starts answering. A client that
+      # resolves a hosted package mid-deploy would otherwise record a 404 in its lockfile.
+      - name: Upload packuments to KV
+        if: inputs.skip_kv == false
+        run: pnpm exec wrangler kv bulk put dists/registry/kv.json --binding REGISTRY --remote
+
+      - name: Deploy worker
+        run: pnpm exec wrangler deploy
+
+      # A deploy that leaves the registry unreachable is worth failing on here rather than discovering it from a user's
+      # failed install.
+      - name: Smoke test
+        if: inputs.registry_url != ''
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if curl -fsS --max-time 20 "$REGISTRY_URL/dsh-hint-shell" > /dev/null; then
+              echo "served a hosted packument"
+              exit 0
+            fi
+            echo "attempt $attempt failed; retrying in 5s"
+            sleep 5
+          done
+          echo "the registry did not serve a hosted packument" >&2
+          exit 1
+        env:
+          REGISTRY_URL: ${{ inputs.registry_url }}
+
+      - name: Summarize
+        run: |
+          packages=$(node -p 'Object.keys(require("./dists/registry/manifest.json").packages).length')
+          kv=${{ inputs.skip_kv == false && 'performed' || 'skipped' }}
+          smoke=${{ inputs.registry_url != '' && 'performed' || 'skipped' }}
+          {
+            echo "### update-cf-worker"
+            echo
+            echo "- KV upload: $kv"
+            echo "- smoke test: $smoke"
+            echo "- packages in dists/registry/manifest.json: $packages"
+          } >> "$GITHUB_STEP_SUMMARY"

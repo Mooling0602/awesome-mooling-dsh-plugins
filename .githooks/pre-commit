@@ -1,0 +1,40 @@
+#!/bin/sh
+# Refuse a commit that stages a credential.
+#
+# `.gitignore` only hides files from `git add`; it cannot stop `git add -f` or a generated file that happens to carry a
+# token. This hook inspects what is actually staged, so a secret cannot reach a commit even when the ignore list was
+# bypassed or was never updated for a new file name.
+set -eu
+
+# Anything Cloudflare-shaped and long enough to be live. Wrangler tokens are 40 characters, KV namespace and account ids
+# are 32 hex characters, and the scanner needs to catch a value pasted into a config file, not a placeholder.
+PATTERNS='CLOUDFLARE_API_TOKEN[[:space:]]*[:=][[:space:]]*["'"'"']?[A-Za-z0-9_-]{20,}
+KV_NAMESPACE_ID[[:space:]]*[:=][[:space:]]*["'"'"']?[0-9a-f]{32}
+CLOUDFLARE_ACCOUNT_ID[[:space:]]*[:=][[:space:]]*["'"'"']?[0-9a-f]{32}
+["'"'"']?id["'"'"']?[[:space:]]*=[[:space:]]*["'"'"'][0-9a-f]{32}["'"'"']
+gh[pousr]_[A-Za-z0-9]{36,}
+sk-[A-Za-z0-9]{32,}'
+
+# The placeholder wrangler.toml ships with must stay legal, or the hook would reject the committed file itself.
+ALLOW='KV_NAMESPACE_ID["'"'"']?$'
+
+status=0
+for file in $(git diff --cached --name-only --diff-filter=ACMR); do
+  [ -f "$file" ] || continue
+  # Binary files have nothing to scan and `grep` would report a false pass.
+  grep -Iq . "$file" 2>/dev/null || continue
+  found=$(grep -EnI -e "$PATTERNS" "$file" 2>/dev/null | grep -Ev "$ALLOW" || true)
+  if [ -n "$found" ]; then
+    echo "pre-commit: refusing to commit a credential in $file" >&2
+    printf '%s\n' "$found" | while IFS= read -r line; do echo "  line ${line%%:*}" >&2; done
+    status=1
+  fi
+done
+
+if [ "$status" -ne 0 ]; then
+  echo '' >&2
+  echo 'Read the value from the environment instead: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, KV_NAMESPACE_ID.' >&2
+  echo 'They are stored in ~/.dsh/.credentials.yaml and never belong in this repository.' >&2
+  echo 'To commit anyway after removing the value, stage the file again.' >&2
+  exit 1
+fi

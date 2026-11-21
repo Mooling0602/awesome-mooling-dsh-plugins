@@ -1,4 +1,5 @@
-name: dsh-bili-danmaku-overlay
-version: 1.1.0
-license: MIT
-repository: https://github.com/Mooling0602/dsh-bili-danmaku-overlay
+id: dsh-bili-danmaku-overlay
+package: dsh-bili-danmaku-overlay
+source: github
+repo: https://github.com/Mooling0602/dsh-bili-danmaku-overlay
+dispatch-type: source

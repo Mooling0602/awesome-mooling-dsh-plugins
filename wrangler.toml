@@ -1,0 +1,39 @@
+# Cloudflare Workers configuration for the npm registry that republishes the plugins dispatched as release tarballs.
+#
+# Deploy with `pnpm deploy` after replacing `KV_NAMESPACE_ID` with the real namespace id from
+# `wrangler kv namespace list`. wrangler does not expand `${...}` in this file, so CI writes the id into a copy of this
+# config before deploying (see .github/workflows/registry.yml). `wrangler dev` works with the placeholder because a local
+# KV simulator is used. The id is a credential-shaped value and is deliberately absent from this file; a pre-commit hook
+# rejects a commit that pastes one in.
+name = "dsh-plugin-registry"
+main = "src/worker.ts"
+compatibility_date = "2026-11-21"
+compatibility_flags = ["nodejs_compat"]
+
+# Reached at <name>.<account>.workers.dev as well as the custom domain below. `workers_dev` stays on so a broken custom
+# domain can be diagnosed by comparing the two hostnames, and so the worker keeps answering if the zone is ever moved.
+workers_dev = true
+
+# The registry's permanent address. `custom_domain = true` makes Cloudflare create the DNS record and certificate itself,
+# which is why the deploy token needs no DNS permission.
+#
+# This hostname is written into every npm source in dists/index.json, so a client records it in its lockfile. Changing it
+# later strands those lockfiles, which is why it is a name this project controls rather than a *.workers.dev subdomain.
+[[routes]]
+pattern = "mynpm.staringplanet.top"
+custom_domain = true
+
+# The registry answers package metadata, so only read traffic is expected. Observability keeps a failed install
+# diagnosable without adding a per-request log line.
+[observability]
+enabled = true
+
+# One namespace, one key per hosted package: the packument plus the tarball location of every version.
+[[kv_namespaces]]
+binding = "REGISTRY"
+id = "KV_NAMESPACE_ID"
+
+[vars]
+# Everything the worker does not host is proxied here unchanged, so pnpm can still resolve a hosted package's own
+# dependencies.
+UPSTREAM = "https://registry.npmjs.org"

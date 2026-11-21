@@ -2,6 +2,10 @@
 set -euo pipefail
 
 TITLE=${TITLE:-awesome-mooling-dsh-plugins}
+# The CF Workers registry that republishes the plugins dispatched as release tarballs. Every npm-source entry in the
+# index points at it, and it proxies anything it has not converted back to registry.npmjs.org. CI overrides this from the
+# `REGISTRY_URL` repository variable so the default can change without touching the workflow.
+REGISTRY=${REGISTRY:-https://mynpm.staringplanet.top}
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO=https://github.com/deepseek-ai/deepseek-harness.git
 WORK=$(mktemp -d)
@@ -47,8 +51,13 @@ JS
 
 cd "$WORK/gen"
 npm install --no-audit --no-fund --workspaces=false --fetch-retries=3 --cache "$WORK/npm-cache" >/dev/null
+
+# dists/plugins.txt is a build artifact; regenerate it from plugins/by-name/ so the index never reads stale input.
+node "$ROOT/src/sources/build.ts"
+
 npx tsx src/bin.ts \
-  --input "$ROOT/plugins.txt" \
-  --output "$ROOT/index.json" \
+  --input "$ROOT/dists/plugins.txt" \
+  --output "$ROOT/dists/index.json" \
   --title "$TITLE" \
+  --registry "$REGISTRY" \
   --cache "$WORK/cache"

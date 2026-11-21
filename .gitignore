@@ -1,0 +1,19 @@
+node_modules/
+
+# Wrangler keeps local caches and, with `wrangler dev`, a local KV copy of the registry under here.
+.wrangler/
+
+# Credentials. Every one of these is read from the environment or from `.dev.vars` at deploy time, never committed: the
+# Worker needs CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID and KV_NAMESPACE_ID, and this repository must not be the
+# place they live. `.env*` is ignored wholesale so a variant such as `.env.production` cannot slip in.
+.env
+.env.*
+.dev.vars
+.dev.vars.*
+*.pem
+*.key
+
+# Build artifacts. dists/index.json is committed because the market consumes the published file, but the packuments and
+# the KV bulk file are regenerated on every deploy and are not worth diffing.
+dists/plugins.txt
+dists/registry/

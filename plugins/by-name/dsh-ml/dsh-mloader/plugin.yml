@@ -1,4 +1,5 @@
-name: dsh-mloader
-version: 0.1.0
-license: LGPL-3.0-only
-repository: https://github.com/Mooling0602/dsh-mloader
+id: dsh-mloader
+package: dsh-mloader
+source: github
+repo: https://github.com/Mooling0602/dsh-mloader
+dispatch-type: source

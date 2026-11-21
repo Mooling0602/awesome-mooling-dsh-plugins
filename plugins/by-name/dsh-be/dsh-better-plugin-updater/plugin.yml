@@ -1,4 +1,5 @@
-name: dsh-better-plugin-updater
-version: 0.1.2
-license: MIT
-repository: https://github.com/Mooling0602/dsh-better-plugin-updater
+id: dsh-better-plugin-updater
+package: dsh-better-plugin-updater
+source: npm
+repo: https://github.com/Mooling0602/dsh-better-plugin-updater
+dispatch-type: npmjs
