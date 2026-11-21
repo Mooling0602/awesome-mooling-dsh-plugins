@@ -1,18 +1,24 @@
 name: Registry
 
 # Publishes the npm registry that serves the plugins dispatched as release tarballs, and the market index that points at
-# it. Runs on every push to main, and on demand.
+# it. Runs on every push to main, on a timer, and on demand.
 #
-# Nothing is committed: `dists/` is a build tree, its packuments go to KV before the worker is deployed, and the index is
-# written to the same namespace afterwards, which the worker serves at /dsh-plugins/index.json. An artifact is not
-# uploaded either, because downloading one needs a signed-in GitHub account and the index is already public on the
-# worker.
+# The timer exists because a plugin publishes a release in its own repository, which never notifies this one. Without it
+# the index only moved when something else pushed here, so a released version could stay invisible indefinitely. An hour
+# is the resolution of `schedule`: GitHub delays or drops runs under load, so the real interval is an hour at best, and a
+# minute-level interval would not be honest about that. Most of those runs find nothing changed and stop at the check
+# below, which is why that check exists: deploying and writing KV every hour would spend the free plan's daily write
+# quota on releases that carry no news, and that quota is what failed the run of 2026-11-21.
 #
-# The two jobs are ordered by a real dependency: `build-index.sh` resolves the hosted plugins by asking the deployed
-# registry for their packuments, so the worker and its KV data have to exist before the index can describe them.
+# Nothing is committed: `dists/` is a build tree, its packuments go to KV after the worker is deployed, and the index is
+# compiled into the worker, which serves it at /dsh-plugins/index.json. An artifact is not uploaded either, because
+# downloading one needs a signed-in GitHub account and the index is already public on the worker.
 on:
   push:
     branches: [main]
+  schedule:
+    # Five minutes past the hour, to stay clear of the top-of-the-hour load spike that delays scheduled runs.
+    - cron: '5 * * * *'
   workflow_dispatch:
 
 # One deploy at a time: two runs publishing different packuments to the same KV namespace would leave the index and the
@@ -33,6 +39,10 @@ jobs:
   registry:
     name: Publish registry
     runs-on: ubuntu-latest
+    # The index job reads this to decide whether there is anything to publish. It has to be a job output rather than a
+    # step output, because a job cannot see the steps of another job.
+    outputs:
+      publish: ${{ steps.changed.outputs.publish || 'true' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -62,15 +72,35 @@ jobs:
       - name: Build index
         run: ./build-index.sh
 
+      # A scheduled run exists because a plugin can publish without this repository seeing a push. Most of those hours
+      # find nothing changed, and deploying and writing KV anyway would spend the free plan's write quota on a release
+      # that carries no news. The check compares the index just built against the one being served, so a change of any
+      # kind is caught, not only a new tag.
+      #
+      # A failed check fails the run and publishes nothing. Publishing anyway is the tempting option, since the rest of
+      # the pipeline would work regardless, but it trades a stale index for a wrong one: the check fails chiefly when the
+      # release data it reads is incomplete, and an index built from a half-read list drops plugins from the market
+      # instead of merely showing yesterday's versions.
+      - name: Check whether the index moved
+        id: changed
+        if: github.event_name == 'schedule'
+        run: |
+          node src/index/changed.ts "$RUNNER_TEMP/publish"
+          echo "publish=$(cat "$RUNNER_TEMP/publish")" >> "$GITHUB_OUTPUT"
+
       - run: pnpm check
+        if: github.event_name != 'schedule' || steps.changed.outputs.publish == 'true'
       - run: pnpm test
+        if: github.event_name != 'schedule' || steps.changed.outputs.publish == 'true'
 
       - name: Verify the worker bundles
+        if: github.event_name != 'schedule' || steps.changed.outputs.publish == 'true'
         run: pnpm exec wrangler deploy --dry-run --outdir "$RUNNER_TEMP/worker"
 
       # wrangler does not expand `${...}` in wrangler.toml, so the namespace id is written into it here. The committed
       # file keeps the placeholder, which means a checkout can never deploy over the wrong namespace by accident.
       - name: Point the config at the namespace
+        if: github.event_name != 'schedule' || steps.changed.outputs.publish == 'true'
         env:
           KV_NAMESPACE_ID: ${{ secrets.KV_NAMESPACE_ID }}
         run: |
@@ -90,6 +120,7 @@ jobs:
       #
       # The listing is filtered by `--cache-plan`, so only decision records are removed and the packuments stay.
       - name: Drop cached proxy decisions
+        if: github.event_name != 'schedule' || steps.changed.outputs.publish == 'true'
         if: github.event_name == 'workflow_dispatch'
         run: |
           pnpm exec wrangler kv key list --binding REGISTRY --remote > "$RUNNER_TEMP/kv-keys.json"
@@ -108,6 +139,7 @@ jobs:
       # whose data is one release stale is a working worker: the previous packuments are still in KV and still resolve.
       # A worker that cannot deploy is not.
       - name: Deploy worker
+        if: github.event_name != 'schedule' || steps.changed.outputs.publish == 'true'
         run: pnpm exec wrangler deploy
 
       # A failure here must fail the run. The free plan caps how many KV writes an account may make per day, so an
@@ -115,6 +147,7 @@ jobs:
       # green would hide that. The cause is named explicitly instead, so the fix is obvious without reading wrangler
       # output.
       - name: Upload packuments to KV
+        if: github.event_name != 'schedule' || steps.changed.outputs.publish == 'true'
         id: upload
         run: |
           if ! pnpm exec wrangler kv bulk put dists/registry/kv.json --binding REGISTRY --remote; then
@@ -125,6 +158,9 @@ jobs:
   index:
     name: Build index
     needs: registry
+    # A scheduled run that found nothing changed has nothing to publish; skipping the job keeps the timers from filling
+    # the run list with deploys of identical data.
+    if: needs.registry.outputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
