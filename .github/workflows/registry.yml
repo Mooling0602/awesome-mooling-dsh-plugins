@@ -120,7 +120,6 @@ jobs:
       #
       # The listing is filtered by `--cache-plan`, so only decision records are removed and the packuments stay.
       - name: Drop cached proxy decisions
-        if: github.event_name != 'schedule' || steps.changed.outputs.publish == 'true'
         if: github.event_name == 'workflow_dispatch'
         run: |
           pnpm exec wrangler kv key list --binding REGISTRY --remote > "$RUNNER_TEMP/kv-keys.json"
