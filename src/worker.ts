@@ -13,7 +13,7 @@
  * Nothing is computed per request. Release assets and integrity are precomputed by `src/registry/build.ts` in CI,
  * because the unauthenticated GitHub API allows 60 requests per hour and Workers egress addresses are shared.
  */
-import { packageOf, route, type RegistryEntry } from './routes.ts'
+import { INDEX_KEY, INDEX_PATH, packageOf, route, type RegistryEntry } from './routes.ts'
 
 /** The KV namespace holding, for each converted package, its packument and tarball locations. */
 export interface Env {
@@ -71,6 +71,21 @@ async function proxy(request: Request, upstream: string): Promise<Response> {
 }
 
 /**
+ * Serve the market index.
+ *
+ * The index is stored as one KV value rather than computed here, for the same reason the packuments are: building it
+ * needs every plugin's release inventory, which is far past the CPU budget of a request. Nothing is cached when it is
+ * missing, so a client retries once the publishing job has written it instead of pinning a 404.
+ * @param kv - the namespace.
+ * @returns the index, or a 404 when it has not been published yet.
+ */
+async function index(kv: KVNamespace): Promise<Response> {
+  const raw = await kv.get(INDEX_KEY, 'json')
+  if (raw === null) return json({ error: 'the index has not been published yet' }, 404)
+  return json(raw, 200, true)
+}
+
+/**
  * Answer one request.
  * @param request - the incoming request.
  * @param env - bindings.
@@ -78,6 +93,9 @@ async function proxy(request: Request, upstream: string): Promise<Response> {
  */
 export async function handle(request: Request, env: Env): Promise<Response> {
   const upstream = env.UPSTREAM ?? DEFAULT_UPSTREAM
+  // The index is not a package, so it is resolved before any package name is parsed; routing it later would send it
+  // upstream and 404, because no such npm package exists.
+  if (new URL(request.url).pathname === INDEX_PATH) return index(env.REGISTRY)
   const parts = new URL(request.url).pathname.split('/').filter(segment => segment !== '')
   const found = packageOf(parts)
   // A path that names no package cannot be hosted here, and `/` alone (a browse request) belongs to the registry.

@@ -6,6 +6,23 @@
  * for a dependency the registry does not host still installs. Routing is pure so it can be tested without KV.
  */
 
+/**
+ * The path the market index is served from.
+ *
+ * It is not a package, so it is resolved before any name is parsed: routing it as one would proxy it to the public
+ * registry, where the name does not exist, and the index would 404 instead of being served. It is also a plain KV key,
+ * so publishing a new index is one write and needs no deploy.
+ */
+export const INDEX_PATH = '/dsh-plugins/index.json'
+
+/**
+ * The KV key the index is stored under.
+ *
+ * A package name cannot collide with it, because no valid npm name starts with two underscores, so the same namespace
+ * safely holds the index and every packument.
+ */
+export const INDEX_KEY = '__index__'
+
 /** What the Worker should do with a request. */
 export type Route =
   | { readonly kind: 'packument'; readonly name: string }

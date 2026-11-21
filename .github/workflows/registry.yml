@@ -1,7 +1,12 @@
 name: Registry
 
-# Builds the generated tree under dists/ and publishes the npm registry that serves the plugins dispatched as release
-# tarballs. Runs on every push to main, and on demand.
+# Publishes the npm registry that serves the plugins dispatched as release tarballs, and the market index that points at
+# it. Runs on every push to main, and on demand.
+#
+# Nothing is committed: `dists/` is a build tree, its packuments go to KV before the worker is deployed, and the index is
+# written to the same namespace afterwards, which the worker serves at /dsh-plugins/index.json. An artifact is not
+# uploaded either, because downloading one needs a signed-in GitHub account and the index is already public on the
+# worker.
 #
 # The two jobs are ordered by a real dependency: `build-index.sh` resolves the hosted plugins by asking the deployed
 # registry for their packuments, so the worker and its KV data have to exist before the index can describe them.
@@ -98,8 +103,16 @@ jobs:
         env:
           REGISTRY: ${{ vars.REGISTRY_URL }}
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dists
-          path: dists/
-          if-no-files-found: error
+      # The index is served by the same worker that serves the packuments, so a client fetches both from one host and
+      # the index cannot go stale in a checked-in file. Writing it is a plain KV put: the worker reads the key per
+      # request, so publishing needs no redeploy.
+      - name: Point the config at the namespace
+        env:
+          KV_NAMESPACE_ID: ${{ secrets.KV_NAMESPACE_ID }}
+        run: |
+          test -n "$KV_NAMESPACE_ID" || { echo 'KV_NAMESPACE_ID is not set' >&2; exit 1; }
+          sed -i "s|id = \"KV_NAMESPACE_ID\"|id = \"$KV_NAMESPACE_ID\"|" wrangler.toml
+          grep -n 'id = ' wrangler.toml
+
+      - name: Publish index to KV
+        run: pnpm exec wrangler kv key put __index__ --path dists/index.json --binding REGISTRY --remote

@@ -13,7 +13,7 @@ node_modules/
 *.pem
 *.key
 
-# Build artifacts. dists/index.json is committed because the market consumes the published file, but the packuments and
-# the KV bulk file are regenerated on every deploy and are not worth diffing.
-dists/plugins.txt
-dists/registry/
+# Build artifacts. Nothing here is committed: CI regenerates the tree on every run and publishes it, the packuments and
+# the KV bulk file to the namespace, and the index to the same namespace under `__index__`, which the worker serves at
+# /dsh-plugins/index.json. Committing them only ever produced follow-up "update the generated file" commits.
+dists/

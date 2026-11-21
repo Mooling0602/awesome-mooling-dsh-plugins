@@ -219,6 +219,9 @@ export function kvRecords(
 
 /**
  * Write the manifest, every packument, and the KV bulk file under `dists/registry/`.
+ *
+ * The index is deliberately not folded in here: it is built by `build-index.sh` from the packuments this worker serves,
+ * so it can only exist after a deploy, while this runs before one. It is published by its own `wrangler kv key put`.
  * @param root - repository root.
  * @returns how many packages were written.
  */

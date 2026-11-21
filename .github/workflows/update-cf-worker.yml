@@ -3,8 +3,8 @@ name: update-cf-worker
 # Manually republish the CF Workers registry that serves the plugins dispatched as release tarballs.
 #
 # Run this from Actions → update-cf-worker → Run workflow when the worker, its KV data, or the `tarball` plugins change
-# and no index rebuild is wanted. It deploys by itself and never touches `dists/index.json`, so it cannot leave a
-# half-written index behind.
+# and no index rebuild is wanted. It does rebuild the packuments, so the index the registry job publishes is left
+# untouched and may list older versions until that job runs again; trigger it when the index has to match a release.
 on:
   workflow_dispatch:
     inputs:
