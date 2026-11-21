@@ -17,8 +17,10 @@ on:
   push:
     branches: [main]
   schedule:
-    # Five minutes past the hour, to stay clear of the top-of-the-hour load spike that delays scheduled runs.
-    - cron: '5 * * * *'
+    # Twenty-three minutes past the hour. GitHub drops or delays scheduled runs when its queue is loaded, and its
+    # documentation names the start of every hour as a high-load time, so a run at :05 competes with every other hourly
+    # job on the platform. An offset well clear of the hour start is the documented way to improve the chance it runs.
+    - cron: '23 * * * *'
   workflow_dispatch:
 
 # One deploy at a time: two runs publishing different packuments to the same KV namespace would leave the index and the
