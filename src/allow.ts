@@ -203,11 +203,24 @@ export async function allowed(
     for (const dependency of dependencies) {
       if (seen.has(dependency)) continue
       seen.add(dependency)
-      // Proven reachable, so it is answered from the cache next time without walking again. Recording the path rather
-      // than only the requested package is what keeps a first install fast: pnpm asks for a dependency before its own
-      // dependencies, so each later request finds its answer already cached.
+      // Proven reachable, so it is answered from the cache next time without walking again.
       await remember(kv, dependency)
       if (dependency === name) return true
+      // A vendor package is answered without being walked, so its own dependencies have to be collected here instead:
+      // an open scope is not expanded, and dropping this edge would leave a package like `react` unreachable even
+      // though the plugin install genuinely needs it. Its dependencies are recorded but not recursed into, which keeps
+      // the walk small while still covering what an install pulls in.
+      if (openScope(dependency)) {
+        const transitive = dependenciesOf(await resolve(dependency, upstream))
+        for (const nested of transitive) {
+          if (seen.has(nested)) continue
+          seen.add(nested)
+          await remember(kv, nested)
+          if (nested === name) return true
+        }
+        // The vendor package itself is answered directly on request, so the walk never recurses into it.
+        continue
+      }
       queue.push(dependency)
     }
   }

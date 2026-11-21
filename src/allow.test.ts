@@ -247,3 +247,24 @@ test('requestedVersion 只认 tarball 文件名', () => {
   assert.equal(requestedVersion('dsh-x', ['-', 'dsh-x-1.0.0.zip']), undefined)
   assert.equal(requestedVersion('dsh-x', ['-', 'dsh-x-.tgz']), undefined)
 })
+
+test('厂商 scope 的依赖会被记录但不再递归', async () => {
+  // `dsh-x` depends on a vendor package, which itself depends on `zod`. The vendor name is answered without a walk, so
+  // its dependencies would otherwise never be recorded and a real install would be refused on `zod`.
+  const { asked, restore } = serve({
+    '@deepseek-ai/vendor': ['zod', 'yaml'],
+    zod: ['nested-behind-zod'],
+  })
+  try {
+    const store = kv()
+    const hosts = (name: string): boolean => name === 'dsh-x'
+    const own = async (name: string): Promise<readonly string[] | undefined> =>
+      name === 'dsh-x' ? ['@deepseek-ai/vendor'] : undefined
+    const result = await allowed('zod', store, 'https://up.test', hosts, own, ['dsh-x'])
+    assert.equal(result, true)
+    // `zod`'s own dependencies are not walked, because the vendor edge is collected one level deep only.
+    assert.equal(asked.includes('nested-behind-zod'), false)
+  } finally {
+    restore()
+  }
+})
