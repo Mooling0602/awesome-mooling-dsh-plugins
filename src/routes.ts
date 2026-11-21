@@ -23,6 +23,15 @@ export const INDEX_PATH = '/dsh-plugins/index.json'
  */
 export const INDEX_KEY = '__index__'
 
+/**
+ * The KV key listing every hosted package name.
+ *
+ * The worker reads it to decide whether an unhosted package may still be proxied, which is only true when a hosted
+ * package depends on it. Without the list that decision would need a KV `list` on every request, because a KV key is
+ * otherwise indistinguishable from the package it describes.
+ */
+export const HOSTED_KEY = '__hosted__'
+
 /** What the Worker should do with a request. */
 export type Route =
   | { readonly kind: 'packument'; readonly name: string }

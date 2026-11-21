@@ -45,10 +45,12 @@ In the DSH plugin index format, a version has only two possible sources: an npm 
 A plugin distributed as a GitHub release tarball, however, usually has not published its package to npm. So that such plugins can still be listed in the index and installed in one step, this repository runs its own CloudFlare Workers as a read-only npm registry:
 
 - it turns GitHub release assets into proper npm packages, so pnpm can recognise and install them normally
-- any package it does not know is proxied unchanged to `registry.npmjs.org`
+- it proxies a hosted package's dependencies to `registry.npmjs.org`, and refuses every other package
 - the index itself is served by the same worker, so a client only ever talks to one domain
 
 The second point is not optional. The `peerDependencies` of a converted package are still ordinary npm packages, so a worker that answered only for the packages it hosts could not complete dependency resolution during an install.
+
+That proxying is scoped, though: only packages reachable from a hosted one are allowed, meaning its direct dependencies and their dependencies in turn. Proxying any name on request would turn this domain into a free public npm mirror, where anyone could install any package at this project's expense. The decision lives in `src/allow.ts` and is cached per package in KV: a grant is permanent, while a refusal expires after a day, so a plugin that gains a new dependency later is not blocked by a stale record.
 
 ### How data flows
 

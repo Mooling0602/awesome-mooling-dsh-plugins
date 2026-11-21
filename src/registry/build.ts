@@ -30,6 +30,7 @@ import { needsConversion } from '../sources.ts'
 import { downloadableVersions, repositoryPath, type Release } from '../releases.ts'
 import { integrityOf, type Integrity } from '../integrity.ts'
 import { buildPackument, type Packument, type TarballVersion } from '../packument.ts'
+import { HOSTED_KEY } from '../routes.ts'
 
 /** Repository root, one level above `src/`. */
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -202,19 +203,25 @@ export async function buildRegistry(
  *
  * Each key is a package name and each value is the packument plus the tarball location of every version, which is
  * exactly what `route()` expects through its lookup callback.
+ *
+ * One extra record lists the hosted names under HOSTED_KEY. The worker needs that list to decide whether a package it
+ * does not host may still be proxied: only packages reachable from a hosted one are, so the walk has to start somewhere
+ * without paying a KV `list` on every request.
  * @param manifest - the built manifest.
  * @param packuments - the built packuments.
- * @returns one record per hosted package.
+ * @returns one record per hosted package, plus the hosted-name list.
  */
 export function kvRecords(
   manifest: RegistryManifest,
   packuments: ReadonlyMap<string, Packument>,
 ): { key: string; value: string }[] {
-  return Object.entries(manifest.packages).map(([name, entry]) => {
+  const records = Object.entries(manifest.packages).map(([name, entry]) => {
     const tarballs: Record<string, { tarball: string }> = {}
     for (const [version, url] of Object.entries(entry.versions)) tarballs[version] = { tarball: url }
     return { key: name, value: JSON.stringify({ packument: packuments.get(name), tarballs }) }
   })
+  records.push({ key: HOSTED_KEY, value: JSON.stringify(Object.keys(manifest.packages)) })
+  return records
 }
 
 /**

@@ -16,13 +16,32 @@ const ENTRY: RegistryEntry = {
   },
 }
 
-/** A KV namespace backed by a plain map. */
-function kv(entries: Record<string, unknown>): KVNamespace {
+/**
+ * A hosted entry that depends on `cordis`.
+ *
+ * The allow list only proxies packages reachable from a hosted one, so a test that needs the proxy path has to start
+ * from a package that actually declares the dependency.
+ */
+const DEPENDS_ON_CORDIS: RegistryEntry = {
+  packument: {
+    name: 'dsh-hint-shell',
+    'dist-tags': { latest: '0.1.1' },
+    versions: { '0.1.1': { name: 'dsh-hint-shell', version: '0.1.1', peerDependencies: { cordis: '^4.0.0' } } },
+  },
+  tarballs: {},
+}
+
+/** A KV namespace backed by a plain map. */function kv(entries: Record<string, unknown>): KVNamespace {
   return {
     async get(key: string, type?: string) {
       const value = entries[key]
       if (value === undefined) return null
       return type === 'json' ? value : JSON.stringify(value)
+    },
+    // The allow-list remembers its answers through `put`; storing them in the same map is what lets a test observe a
+    // cached decision.
+    async put(key: string, value: string) {
+      entries[key] = value
     },
   } as unknown as KVNamespace
 }
@@ -80,9 +99,13 @@ test('未托管的包代理回上游', async () => {
   assert.match(proxied[0] ?? '', /^https:\/\/registry\.npmjs\.org\//u)
 })
 
-test('未托管时保留查询串', async () => {
-  const { proxied } = await request('https://reg.test/dsh-other?write=true')
-  assert.match(proxied[0] ?? '', /\?write=true$/u)
+test('未托管的包若无托管包依赖则拒绝', async () => {
+  const { response, proxied } = await request('https://reg.test/dsh-other?write=true')
+  // Refusing is the point: proxying any name on request would make this domain a free public npm mirror.
+  assert.equal(response.status, 404)
+  assert.equal(proxied.length, 0)
+  const body = (await response.json()) as { error: string }
+  assert.match(body.error, /not a dependency of a hosted package/u)
 })
 
 test('根路径代理回上游', async () => {
@@ -103,7 +126,12 @@ test('托管的包但文件名不匹配时 404', async () => {
 })
 
 test('可覆盖上游地址', async () => {
-  const { proxied } = await request('https://reg.test/dsh-other', {}, 'https://mirror.test')
+  // A dependency of the hosted package, so the request reaches the proxy and the overridden base URL can be observed.
+  const { proxied } = await request(
+    'https://reg.test/cordis',
+    { 'dsh-hint-shell': DEPENDS_ON_CORDIS, __hosted__: ['dsh-hint-shell'] },
+    'https://mirror.test',
+  )
   assert.match(proxied[0] ?? '', /^https:\/\/mirror\.test\//u)
 })
 

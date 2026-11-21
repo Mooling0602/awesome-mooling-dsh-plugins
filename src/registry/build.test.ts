@@ -138,7 +138,9 @@ test('kvRecords 产出的值能被 worker 直接使用', () => {
     time: { '1.0.0': '2026-01-01T00:00:00.000Z', modified: '2026-01-01T00:00:00.000Z' },
   }
   const records = kvRecords(manifest, new Map([['dsh-demo', packument]]))
-  assert.equal(records.length, 1)
+  // One record per package plus the hosted-name list the worker reads to decide what may be proxied.
+  assert.equal(records.length, 2)
+  assert.deepEqual(records[1], { key: '__hosted__', value: '["dsh-demo"]' })
   assert.equal(records[0]?.key, 'dsh-demo')
   // The worker reads `{ packument, tarballs }`, so the record has to match `routes.ts`'s RegistryEntry exactly.
   const value = JSON.parse(records[0]?.value ?? '{}') as { packument: unknown; tarballs: Record<string, unknown> }
@@ -155,6 +157,7 @@ test('kvRecords 跳过没有 packument 的包', () => {
   }
   const records = kvRecords(manifest, new Map())
   // A package whose artifact failed to build must not become a KV key holding `"packument": undefined`.
-  assert.equal(records.length, 1)
-  assert.equal(JSON.parse(records[0]?.value ?? '{}').packument ?? null, null)
+  const packageRecord = records.find(record => record.key === 'a')
+  assert.ok(packageRecord !== undefined)
+  assert.equal(JSON.parse(packageRecord.value).packument ?? null, null)
 })
