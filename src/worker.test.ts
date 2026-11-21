@@ -51,17 +51,34 @@ function env(entries: Record<string, unknown> = { 'dsh-hint-shell': ENTRY }, ups
   return upstream === undefined ? { REGISTRY: kv(entries) } : { REGISTRY: kv(entries), UPSTREAM: upstream }
 }
 
+/** How a test wants the stubbed upstream to answer. */
+interface Stub {
+  /** Body to answer with; `undefined` answers an empty body. */
+  readonly bytes?: string
+  /** Status to answer with; defaults to 200. */
+  readonly status?: number
+  /** Headers to answer with. */
+  readonly headers?: Record<string, string>
+  /** Reject the fetch instead of answering, as an unreachable host would. */
+  readonly fail?: boolean
+}
+
 /** Run one request against a handler, with fetch stubbed for the proxy path. */
 async function request(
   url: string,
   entries?: Record<string, unknown>,
   upstream?: string,
+  stub: Stub = {},
 ): Promise<{ response: Response; proxied: string[] }> {
   const proxied: string[] = []
   const original = globalThis.fetch
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     proxied.push(String(input))
-    return new Response('{"from":"upstream"}', { status: 200, headers: { 'content-type': 'application/json' } })
+    if (stub.fail === true) throw new TypeError('fetch failed')
+    return new Response(stub.bytes ?? '{"from":"upstream"}', {
+      status: stub.status ?? 200,
+      headers: stub.headers ?? { 'content-type': 'application/json' },
+    })
   }) as typeof globalThis.fetch
   try {
     const response = await handle(new Request(url), env(entries, upstream))
@@ -83,14 +100,44 @@ test('packument 带缓存头', async () => {
   assert.match(response.headers.get('cache-control') ?? '', /max-age=300/u)
 })
 
-test('tarball 请求 302 到 GitHub 资产', async () => {
-  const { response, proxied } = await request('https://reg.test/dsh-hint-shell/-/dsh-hint-shell-0.1.1.tgz')
+test('tarball 请求把 GitHub 资产转发给客户端', async () => {
+  const { response, proxied } = await request('https://reg.test/dsh-hint-shell/-/dsh-hint-shell-0.1.1.tgz', undefined, undefined, {
+    bytes: 'tarball-bytes',
+  })
+  assert.equal(response.status, 200)
+  assert.equal(await response.text(), 'tarball-bytes')
+  assert.deepEqual(proxied, [ENTRY.tarballs['0.1.1']?.tarball])
+})
+
+test('转发时丢弃逐跳与编码头', async () => {
+  const { response } = await request('https://reg.test/dsh-hint-shell/-/dsh-hint-shell-0.1.1.tgz', undefined, undefined, {
+    bytes: 'x',
+    headers: { 'content-encoding': 'gzip', 'content-length': '999', connection: 'keep-alive', 'cache-control': 'max-age=60' },
+  })
+  assert.equal(response.headers.get('content-encoding'), null)
+  assert.equal(response.headers.get('content-length'), null)
+  assert.equal(response.headers.get('connection'), null)
+  // A header that survives re-encoding is still forwarded.
+  assert.equal(response.headers.get('cache-control'), 'max-age=60')
+})
+
+test('回源失败时回退到 302，而不是让安装失败', async () => {
+  const { response, proxied } = await request('https://reg.test/dsh-hint-shell/-/dsh-hint-shell-0.1.1.tgz', undefined, undefined, {
+    fail: true,
+  })
   assert.equal(response.status, 302)
-  assert.equal(
-    response.headers.get('location'),
-    'https://github.com/Mooling0602/dsh-hint-shell/releases/download/0.1.1/dsh-hint-shell-0.1.1.tgz',
-  )
-  assert.deepEqual(proxied, [])
+  assert.equal(response.headers.get('location'), ENTRY.tarballs['0.1.1']?.tarball)
+  // The attempt was made, so the redirect is a fallback and not the default path.
+  assert.deepEqual(proxied, [ENTRY.tarballs['0.1.1']?.tarball])
+})
+
+test('回源返回错误状态时也回退到 302', async () => {
+  const { response } = await request('https://reg.test/dsh-hint-shell/-/dsh-hint-shell-0.1.1.tgz', undefined, undefined, {
+    status: 503,
+    bytes: '<html>not a package</html>',
+  })
+  assert.equal(response.status, 302)
+  assert.equal(response.headers.get('location'), ENTRY.tarballs['0.1.1']?.tarball)
 })
 
 test('未托管的依赖代理回上游', async () => {

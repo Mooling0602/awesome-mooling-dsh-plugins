@@ -4,7 +4,9 @@
  * Two kinds of package reach this worker.
  *
  * A plugin dispatched as `tarball` is not on npm, so its packument lives in KV and its tarballs are GitHub release
- * assets; the worker answers the packument itself and redirects the tarball to GitHub.
+ * assets; the worker answers the packument itself and relays the tarball. Relaying rather than redirecting keeps the
+ * client off GitHub's CDN, which is unreachable or slow from mainland networks; when the relay itself cannot reach
+ * GitHub the tarball is redirected instead, so a reachability problem at this worker never fails an install.
  *
  * Everything else — a plugin already on the official registry, and every dependency pnpm has to resolve — is proxied to
  * registry.npmjs.org. That fallback is not optional: a converted package's `peerDependencies` are ordinary npm packages,
@@ -101,6 +103,40 @@ async function proxy(request: Request, upstream: string): Promise<Response> {
 }
 
 /**
+ * Relay a release asset, falling back to a redirect.
+ *
+ * The bytes are streamed, never buffered: the response body is the upstream body, so relaying a large asset costs the
+ * same CPU as relaying a small one. GitHub answers with a redirect to a signed URL of its own, which `follow` resolves
+ * before any header is written.
+ *
+ * The fallback covers the case where this worker cannot reach GitHub at all. It cannot cover a transfer that dies
+ * halfway, because by then the status line has been sent and the only thing left to do is end the body; the client
+ * sees a truncated download and its own integrity check rejects it, which is a correct failure rather than a silent
+ * corruption.
+ * @param request - the incoming request.
+ * @param tarball - the absolute URL the asset lives at.
+ * @returns the asset, or a redirect when the relay could not be started.
+ */
+async function relay(request: Request, tarball: string): Promise<Response> {
+  const headers = new Headers(request.headers)
+  headers.delete('host')
+  let response: Response
+  try {
+    response = await fetch(tarball, { method: request.method, headers, redirect: 'follow' })
+  } catch {
+    return Response.redirect(tarball, 302)
+  }
+  // An upstream error is not worth relaying: the client would store an HTML body as a package. Redirecting instead
+  // gives it a second chance against GitHub directly, which fails with its own status rather than a misleading one.
+  if (!response.ok) return Response.redirect(tarball, 302)
+  const forwarded = new Headers()
+  for (const [key, value] of response.headers) {
+    if (!DROPPED_HEADERS.has(key.toLowerCase())) forwarded.set(key, value)
+  }
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers: forwarded })
+}
+
+/**
  * Serve the market index.
  *
  * The index is stored as one KV value rather than computed here, for the same reason the packuments are: building it
@@ -154,8 +190,7 @@ export async function handle(request: Request, env: Env): Promise<Response> {
     case 'packument':
       return json(entry.packument, 200, true)
     case 'download':
-      // GitHub serves the asset through a signed, expiring redirect of its own, so a 302 here keeps that intact.
-      return Response.redirect(decided.tarball, 302)
+      return relay(request, decided.tarball)
     case 'not-found':
       return json({ error: decided.reason }, 404)
     case 'proxy':
