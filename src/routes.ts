@@ -75,6 +75,11 @@ function segments(pathname: string): string[] {
  *
  * npm names are either `name` or `@scope/name`, so a scoped name spans two path segments. The name is returned with its
  * path prefix dropped, which keeps `/dsh-x` and `/dsh-x/-/dsh-x-1.0.0.tgz` uniformly addressable.
+ *
+ * A client may encode the slash of a scoped name, so `@scope%2Fname` arrives as one segment. Both spellings have to
+ * resolve to the same package, because a caller that only recognised the literal form would treat the encoded one as
+ * "no package" and let it through whatever check it applies to named packages. That asymmetry is a way around an
+ * allow-list, so the encoded form is decoded before the name is split.
  * @param parts - the non-empty path segments.
  * @returns the package name and the number of segments it occupies, or `undefined` when the path holds no name.
  */
@@ -83,6 +88,12 @@ export function packageOf(parts: readonly string[]): { name: string; consumed: n
   if (first === undefined) return undefined
   const decoded = decode(first)
   if (!decoded.startsWith('@')) return { name: decoded, consumed: 1 }
+  // `@scope%2Fname` carries the slash inside the segment; `@scope/name` splits it across two.
+  const encoded = decoded.indexOf('/')
+  if (encoded !== -1) {
+    const name = decoded.slice(encoded + 1)
+    return name === '' ? undefined : { name: decoded, consumed: 1 }
+  }
   const second = parts[1]
   if (second === undefined) return undefined
   return { name: `${decoded}/${decode(second)}`, consumed: 2 }

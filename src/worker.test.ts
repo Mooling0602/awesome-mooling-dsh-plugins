@@ -26,12 +26,13 @@ const DEPENDS_ON_CORDIS: RegistryEntry = {
   packument: {
     name: 'dsh-hint-shell',
     'dist-tags': { latest: '0.1.1' },
-    versions: { '0.1.1': { name: 'dsh-hint-shell', version: '0.1.1', peerDependencies: { cordis: '^4.0.0' } } },
+    versions: { '0.1.1': { name: 'dsh-hint-shell', version: '0.1.1', peerDependencies: { '@deepseek-ai/cordis': '^4.0.5' } } },
   },
   tarballs: {},
 }
 
-/** A KV namespace backed by a plain map. */function kv(entries: Record<string, unknown>): KVNamespace {
+/** A KV namespace backed by a plain map. */
+function kv(entries: Record<string, unknown>): KVNamespace {
   return {
     async get(key: string, type?: string) {
       const value = entries[key]
@@ -92,8 +93,12 @@ test('tarball 请求 302 到 GitHub 资产', async () => {
   assert.deepEqual(proxied, [])
 })
 
-test('未托管的包代理回上游', async () => {
-  const { response, proxied } = await request('https://reg.test/@deepseek-ai%2Fcordis')
+test('未托管的依赖代理回上游', async () => {
+  // A scoped dependency of a hosted package, so the allow list lets it through to the proxy.
+  const { response, proxied } = await request('https://reg.test/@deepseek-ai%2Fcordis', {
+    'dsh-hint-shell': DEPENDS_ON_CORDIS,
+    __hosted__: ['dsh-hint-shell'],
+  })
   assert.equal(await response.text(), '{"from":"upstream"}')
   assert.equal(proxied.length, 1)
   assert.match(proxied[0] ?? '', /^https:\/\/registry\.npmjs\.org\//u)
@@ -106,6 +111,14 @@ test('未托管的包若无托管包依赖则拒绝', async () => {
   assert.equal(proxied.length, 0)
   const body = (await response.json()) as { error: string }
   assert.match(body.error, /not a dependency of a hosted package/u)
+})
+
+test('编码的 scope 斜杠不能绕过拒绝', async () => {
+  // `@scope%2Fname` has to be recognised as a package. If it were not, it would fall into the "no package name" branch
+  // and be proxied unconditionally, which reopens the public-mirror hole this worker is meant to close.
+  const encoded = await request('https://reg.test/@types%2Fnode')
+  assert.equal(encoded.response.status, 404)
+  assert.equal(encoded.proxied.length, 0)
 })
 
 test('根路径代理回上游', async () => {
@@ -136,8 +149,11 @@ test('可覆盖上游地址', async () => {
 })
 
 test('代理不改写路径', async () => {
-  const { proxied } = await request('https://reg.test/@scope%2Fname')
-  assert.match(proxied[0] ?? '', /\/@scope%2Fname$/u)
+  const { proxied } = await request('https://reg.test/@deepseek-ai%2Fcordis', {
+    'dsh-hint-shell': DEPENDS_ON_CORDIS,
+    __hosted__: ['dsh-hint-shell'],
+  })
+  assert.match(proxied[0] ?? '', /\/@deepseek-ai%2Fcordis$/u)
 })
 
 test('多个包各自从 KV 读取', async () => {

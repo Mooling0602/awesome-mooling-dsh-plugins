@@ -29,6 +29,20 @@ test('packageOf 读 scope 名占两段', () => {
   assert.deepEqual(packageOf(['@scope', 'dsh-y', '-', 'f.tgz']), { name: '@scope/dsh-y', consumed: 2 })
 })
 
+test('packageOf 把编码的 scope 斜杠解析成同一个包', () => {
+  // A client may send `@scope%2Fname` as a single segment. Recognising only the literal form would make the encoded
+  // spelling look like "no package", which is how an allow-list gets bypassed.
+  assert.deepEqual(packageOf(['@scope%2Fdsh-y']), { name: '@scope/dsh-y', consumed: 1 })
+  assert.deepEqual(packageOf(['@scope%2Fdsh-y', '-', 'f.tgz']), { name: '@scope/dsh-y', consumed: 1 })
+  // Both spellings must agree, or one of them skips whichever check keys off the name.
+  assert.equal(packageOf(['@scope%2Fdsh-y'])?.name, packageOf(['@scope', 'dsh-y'])?.name)
+})
+
+test('packageOf 拒绝只有 scope 没有名字的路径', () => {
+  assert.equal(packageOf(['@scope%2F']), undefined)
+  assert.equal(packageOf(['@scope']), undefined)
+})
+
 test('packageOf 对空路径返回 undefined', () => {
   assert.equal(packageOf([]), undefined)
   assert.equal(packageOf(['@scope']), undefined)
