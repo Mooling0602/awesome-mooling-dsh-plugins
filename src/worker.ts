@@ -173,8 +173,12 @@ export async function handle(request: Request, env: Env): Promise<Response> {
     const hosted = await hostedNames(env.REGISTRY)
     const hosts: Hosts = name => hosted.has(name)
     // Only a converted package has a packument in KV, so an npm-published plugin yields `undefined` and the walk asks
-    // upstream for its dependencies instead.
+    // upstream for its dependencies instead. The hosted set answers that without a KV read: the walk visits up to
+    // WALK_LIMIT packages per refusal, and reading KV for each of them costs a hundred reads on a path that is about to
+    // be refused anyway. The set is already in memory, so the read is only paid for a package that may hold a packument.
     const own: OwnDependencies = async (name, version) => {
+      // A name outside the hosted set has no packument here by definition, so the walk should ask upstream instead.
+      if (!hosted.has(name)) return undefined
       const entry = await lookup(env.REGISTRY, name)
       if (entry === undefined) return undefined
       return dependenciesOf(entry.packument as Resolved, version)

@@ -17,6 +17,9 @@
 /** KV prefix marking a package as allowed to be proxied. Distinct from package records, which are bare names. */
 export const ALLOW_PREFIX = '__allow__/'
 
+/** Prefix marking a package as refused, so a denial is remembered as well as a grant. */
+export const DENY_PREFIX = '__deny__/'
+
 /** The fields a package's own manifest declares as dependencies. All of them have to be resolvable for an install. */
 const DEPENDENCY_FIELDS = ['dependencies', 'peerDependencies', 'optionalDependencies'] as const
 
@@ -35,6 +38,15 @@ const OPEN_SCOPES = ['@deepseek-ai/'] as const
 
 /** How many packages one walk may visit. A pathological graph must not exhaust the request budget. */
 const WALK_LIMIT = 64
+
+/**
+ * How long a refusal is remembered.
+ *
+ * A grant is kept for good, because the dependency graph only grows: a package that is reachable now stays reachable.
+ * A refusal has to expire, because the reason it was refused can change — a hosted plugin may start depending on the
+ * package, and a permanent denial would then break its install with no way to recover except clearing KV by hand.
+ */
+const DENY_TTL_SECONDS = 60 * 60 * 24
 
 /** The subset of a packument this module reads. */
 export interface Resolved {
@@ -123,24 +135,31 @@ async function resolve(name: string, upstream: string): Promise<Resolved | undef
 }
 
 /**
- * Record a package as reachable, so a later request for it needs no walk.
+ * Record a set of packages as reachable, so a later request for any of them needs no walk.
+ *
+ * Called only with the path a walk proved, never while the walk is still exploring: a refusal traverses the whole
+ * WALK_LIMIT budget and proves nothing the caller asked for, so writing during the walk would spend the quota on
+ * packages no request named.
  *
  * A write failure is swallowed on purpose. The record is an optimisation, not the answer: the walk has already decided
- * that this package may be proxied, and losing the shortcut only means the next request walks again. Letting the write
+ * that these packages may be proxied, and losing the shortcut only means the next request walks again. Letting the write
  * throw would turn a full KV write quota into a failed request, which is exactly what happened on the free plan, where
  * the daily write limit is small enough for a busy deploy day to exhaust it. Reads keep working then, so a worker that
  * ignores the failed write still resolves every package it can walk to.
  * @param kv - the namespace.
- * @param name - the package name.
+ * @param names - the package names to record.
  */
-async function remember(kv: KVNamespace, name: string): Promise<void> {
+async function rememberAll(kv: KVNamespace, names: readonly string[]): Promise<void> {
   try {
-    // Recorded only when absent. The walk reaches every package on a dependency path, so without this check one install
-    // rewrites the whole path even though a previous install already recorded it: the free plan allows 1,000 writes a
-    // day, and re-writing known answers spends that budget on nothing. The read is cheap against the write it saves, and
-    // the read quota is a hundred times the write quota.
-    if ((await kv.get(`${ALLOW_PREFIX}${name}`)) !== null) return
-    await kv.put(`${ALLOW_PREFIX}${name}`, '1')
+    // Each name is recorded only when absent. The walk reaches every package on a dependency path, so without this
+    // check one install rewrites the whole path even though a previous install already recorded it: the free plan allows
+    // 1,000 writes a day, and re-writing known answers spends that budget on nothing. The read is cheap against the write
+    // it saves, and the read quota is a hundred times the write quota.
+    const absent: string[] = []
+    for (const name of names) {
+      if ((await kv.get(`${ALLOW_PREFIX}${name}`)) === null) absent.push(name)
+    }
+    for (const name of absent) await kv.put(`${ALLOW_PREFIX}${name}`, '1')
   } catch {
     // Nothing to do: the answer is already known, only the shortcut is lost.
   }
@@ -163,8 +182,8 @@ export function openScope(name: string): boolean {
  * was asked for: the whole path from a root is part of the same dependency graph, so a later request for a package the
  * walk has already proven reachable costs one KV read and no network call.
  *
- * Only grants are recorded. A refusal is the absence of a grant, so the same walk reproduces it without spending a write,
- * and a package that a later plugin version starts depending on is then reachable without waiting for an entry to expire.
+ * A denial is cached with a TTL rather than for good, because the graph can grow: a plugin may start depending on a
+ * package that was refused before.
  *
  * A package this worker only proxies — a plugin published to npm — is a root as well, because the index points at this
  * domain for those too. Its own dependencies are not in KV, so they are resolved upstream like any other.
@@ -190,9 +209,17 @@ export async function allowed(
   // The vendor scope is answered directly rather than walked, for the reason OPEN_SCOPES records.
   if (openScope(name)) return true
   if ((await kv.get(`${ALLOW_PREFIX}${name}`)) !== null) return true
+  if ((await kv.get(`${DENY_PREFIX}${name}`)) !== null) return false
 
   // Breadth-first from the roots, so a direct dependency is found before a distant one. `seen` also guards the walk
   // against a dependency cycle.
+  //
+  // Nothing is written while the walk runs. Recording each dependency as the walk discovers it costs one KV read and one
+  // KV write per node, and a refusal visits every node before it can answer: a client asking for one name outside the
+  // graph spends the whole WALK_LIMIT budget on packages nothing asked for. The reachable set is also recomputed from
+  // the same roots on the next request, so the records only pay off once the walked name itself is asked for again.
+  // Instead the walk collects what it proves and writes it once, when the answer is a grant.
+  const reachable: string[] = []
   const seen = new Set<string>(roots)
   const queue = [...roots]
   let visited = 0
@@ -205,9 +232,13 @@ export async function allowed(
     for (const dependency of dependencies) {
       if (seen.has(dependency)) continue
       seen.add(dependency)
-      // Proven reachable, so it is answered from the cache next time without walking again.
-      await remember(kv, dependency)
-      if (dependency === name) return true
+      reachable.push(dependency)
+      if (dependency === name) {
+        // The walk proved this name reachable, so the path to it is worth keeping: a later request for it or for any
+        // package on that path then costs one read instead of another walk.
+        await rememberAll(kv, reachable)
+        return true
+      }
       // A vendor package is answered without being walked, so its own dependencies have to be collected here instead:
       // an open scope is not expanded, and dropping this edge would leave a package like `react` unreachable even
       // though the plugin install genuinely needs it. Its dependencies are recorded but not recursed into, which keeps
@@ -217,8 +248,11 @@ export async function allowed(
         for (const nested of transitive) {
           if (seen.has(nested)) continue
           seen.add(nested)
-          await remember(kv, nested)
-          if (nested === name) return true
+          reachable.push(nested)
+          if (nested === name) {
+            await rememberAll(kv, reachable)
+            return true
+          }
         }
         // The vendor package itself is answered directly on request, so the walk never recurses into it.
         continue
@@ -227,9 +261,16 @@ export async function allowed(
     }
   }
 
-  // The walk found no path here, so the package is refused. The refusal is not recorded: a grant is worth caching
-  // because it is a fact that only grows, while a refusal is an absence that the same walk reproduces for free. Caching
-  // it would spend one write per refused package from a budget of a thousand, and a stale entry would then hide a
-  // package that a later plugin version does start depending on.
+  // A refusal that cannot be remembered still refuses: the walk reached no path here, and caching that is only a saving
+  // for the next caller. Swallowed for the same reason as the grant above.
+  try {
+    // Re-writing a live denial would reset its TTL without changing what it says, so it is left alone while it holds.
+    // `allowed` already returns early on a live denial, so this only saves the write when two requests race.
+    if ((await kv.get(`${DENY_PREFIX}${name}`)) === null) {
+      await kv.put(`${DENY_PREFIX}${name}`, '1', { expirationTtl: DENY_TTL_SECONDS })
+    }
+  } catch {
+    // Nothing to do: the answer is already known, only the shortcut is lost.
+  }
   return false
 }
