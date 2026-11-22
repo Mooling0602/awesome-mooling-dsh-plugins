@@ -228,7 +228,8 @@ test('索引来自打包进脚本的模块，且不走代理', async () => {
 
 test('索引带缓存头', async () => {
   const { response } = await request('https://reg.test/dsh-plugins/index.json', {})
-  assert.match(response.headers.get('cache-control') ?? '', /max-age=300/u)
+  // Shorter than a packument: a stale index hides a release the deploy just published, and revalidating it reads no KV.
+  assert.match(response.headers.get('cache-control') ?? '', /max-age=60/u)
 })
 
 test('索引不读 KV', async () => {
@@ -245,5 +246,42 @@ test('索引不读 KV', async () => {
 test('索引路径不会被当成包名代理', async () => {
   // Guards the ordering in `handle`: routing the path as a package would proxy it, and no such npm package exists.
   const { proxied } = await request('https://reg.test/dsh-plugins/index.json', {})
+  assert.deepEqual(proxied, [])
+})
+
+test('拒绝响应带短缓存头，避免重复请求重走依赖遍历', async () => {
+  // A refusal costs a whole graph walk, and without a cache header every repeat of the same request pays it again. The
+  // window stays short because a hosted plugin may later start depending on the name.
+  const { response } = await request('https://reg.test/no-such-package', {})
+  assert.equal(response.status, 404)
+  assert.match(response.headers.get('cache-control') ?? '', /max-age=60/u)
+})
+
+test('托管包的未知子路径返回 404，不被代理', async () => {
+  // Proxying it would answer with whatever the public registry serves under the same name and cache that here.
+  const { response, proxied } = await request('https://reg.test/dsh-hint-shell/bad/path', {})
+  assert.equal(response.status, 404)
+  assert.deepEqual(proxied, [])
+})
+
+test('托管包的版本端点返回该版本的 manifest', async () => {
+  // A shape registry.npmjs.org answers for a package it holds, so a hosted package has to answer it too.
+  const { response, proxied } = await request('https://reg.test/dsh-hint-shell/0.1.1')
+  assert.equal(response.status, 200)
+  const body = (await response.json()) as { version?: string }
+  assert.equal(body.version, '0.1.1')
+  assert.deepEqual(proxied, [])
+})
+
+test('托管包的 tag 端点解析到 dist-tags 指向的版本', async () => {
+  const { response } = await request('https://reg.test/dsh-hint-shell/latest')
+  assert.equal(response.status, 200)
+  const body = (await response.json()) as { version?: string }
+  assert.equal(body.version, '0.1.1')
+})
+
+test('不存在的版本返回 404 而不是代理', async () => {
+  const { response, proxied } = await request('https://reg.test/dsh-hint-shell/9.9.9')
+  assert.equal(response.status, 404)
   assert.deepEqual(proxied, [])
 })

@@ -91,9 +91,28 @@ test('route 拒绝不存在的版本', () => {
 })
 
 test('route 把 dist-tags 与 audit 等路径走代理', () => {
-  assert.equal(route(new URL('https://reg.example/dsh-x/dist-tags'), lookup).kind, 'proxy')
+  // `dist-tags` is not an endpoint the registry defines — measured against registry.npmjs.org it answers 404 — so a
+  // hosted package refuses it rather than serving a shape no client asks for.
+  assert.equal(route(new URL('https://reg.example/dsh-x/dist-tags'), lookup).kind, 'manifest')
   assert.equal(route(new URL('https://reg.example/-/v1/search?text=x'), lookup).kind, 'proxy')
   assert.equal(route(new URL('https://reg.example/'), lookup).kind, 'not-found')
+})
+
+test('route 把托管包的版本与 tag 走 manifest', () => {
+  // These are the shapes registry.npmjs.org answers for a package it holds: /<pkg>/<version> and /<pkg>/<tag>.
+  const exact = route(new URL('https://reg.example/dsh-x/1.0.0'), lookup)
+  assert.equal(exact.kind, 'manifest')
+  assert.equal(exact.kind === 'manifest' ? exact.specifier : '', '1.0.0')
+  const tag = route(new URL('https://reg.example/dsh-x/latest'), lookup)
+  assert.equal(tag.kind === 'manifest' ? tag.specifier : '', 'latest')
+})
+
+test('route 不给托管包的未知子路径走代理', () => {
+  // Forwarding these upstream would answer with whatever the public registry serves under the same name and cache that
+  // answer against this domain.
+  assert.equal(route(new URL('https://reg.example/dsh-x/bad/path'), lookup).kind, 'not-found')
+  assert.equal(route(new URL('https://reg.example/dsh-x/a/b/c'), lookup).kind, 'not-found')
+  assert.equal(route(new URL('https://reg.example/dsh-x/-/dsh-x-1.0.0.tgz'), lookup).kind, 'download')
 })
 
 test('route 对未托管的 tarball 路径走代理', () => {

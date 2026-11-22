@@ -27,6 +27,7 @@ export const HOSTED_KEY = '__hosted__'
 /** What the Worker should do with a request. */
 export type Route =
   | { readonly kind: 'packument'; readonly name: string }
+  | { readonly kind: 'manifest'; readonly name: string; readonly specifier: string }
   | { readonly kind: 'download'; readonly name: string; readonly version: string; readonly tarball: string }
   | { readonly kind: 'proxy' }
   | { readonly kind: 'not-found'; readonly reason: string }
@@ -123,7 +124,26 @@ export function route(url: URL, lookup: (name: string) => RegistryEntry | undefi
     return { kind: 'download', name, version, tarball: tarball.tarball }
   }
 
-  // Everything else — dist-tags, audit, search — belongs to the public registry.
+  // GET /<name>/<version|tag> — one version's manifest, which is what `npm view <name>@<version>` and a client
+  // resolving an exact version ask for. The public registry answers this for any package it holds, so a hosted package
+  // has to answer it too; returning 404 would break those commands for a package this worker serves fine.
+  //
+  // One segment is all this endpoint takes. A shorter or longer rest is not a shape the registry defines, and neither is
+  // a segment starting with `-`, which only the tarball path uses.
+  if (rest.length === 1 && !(rest[0] as string).startsWith('-')) {
+    const entry = lookup(name)
+    if (entry === undefined) return { kind: 'proxy' }
+    return { kind: 'manifest', name, specifier: decode(rest[0] as string) }
+  }
+
+  // Everything else — audit, search, and the rest of the registry API — belongs to the public registry, but only for a
+  // name this worker does not host. A hosted package is answered from KV, so forwarding a path under its name upstream
+  // would fetch whatever the public registry serves for a package of the same name and then let that answer be cached
+  // against this domain. A hosted package accepts exactly the three shapes above; anything else under its name names no
+  // resource here, and the registry defines no fourth.
+  if (lookup(name) !== undefined) {
+    return { kind: 'not-found', reason: `no such resource under ${name}: /${rest.join('/')}` }
+  }
   return { kind: 'proxy' }
 }
 

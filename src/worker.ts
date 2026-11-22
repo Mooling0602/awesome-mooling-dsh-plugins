@@ -38,6 +38,25 @@ const DEFAULT_UPSTREAM = 'https://registry.npmjs.org'
 const DROPPED_HEADERS = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection'])
 
 /**
+ * How long a packument served from KV may be cached.
+ *
+ * Five minutes is short enough that a plugin release shows up while the user who is waiting for it is still installing,
+ * and long enough that one `pnpm install` of a hosted plugin reads each packument once instead of on every dependency
+ * resolution pass. A packument in KV changes only when this repository deploys, which happens far less often than five
+ * minutes apart.
+ */
+const PACKUMENT_MAX_AGE_SECONDS = 300
+
+/**
+ * How long the market index may be cached.
+ *
+ * Shorter than a packument: the index is the list a client browses to find plugins, so a stale copy hides a release the
+ * deploy just published, and the cost of revalidating it is one request that reads no KV at all — it is bundled into the
+ * script. A client that has it cached still gets the fresh copy within the minute.
+ */
+const INDEX_MAX_AGE_SECONDS = 60
+
+/**
  * Read one package out of KV.
  * @param kv - the namespace.
  * @param name - the package name.
@@ -48,10 +67,16 @@ async function lookup(kv: KVNamespace, name: string): Promise<RegistryEntry | un
   return raw === null ? undefined : (raw as RegistryEntry)
 }
 
-/** Answer with a JSON body. */
-function json(body: unknown, status: number, cache = false): Response {
+/**
+ * Answer with a JSON body.
+ * @param body - the value to serialise.
+ * @param status - HTTP status.
+ * @param maxAge - seconds the response may be cached for, or `false` to send no cache header at all.
+ * @returns the response.
+ */
+function json(body: unknown, status: number, maxAge: number | false = false): Response {
   const headers: Record<string, string> = { 'content-type': 'application/json' }
-  if (cache) headers['cache-control'] = 'public, max-age=300'
+  if (maxAge !== false) headers['cache-control'] = `public, max-age=${maxAge}`
   return new Response(JSON.stringify(body), { status, headers })
 }
 
@@ -67,6 +92,20 @@ async function hostedNames(kv: KVNamespace): Promise<ReadonlySet<string>> {
 }
 
 /**
+ * How long a refusal may be cached.
+ *
+ * Short on purpose. A refusal is the answer to a name the walk could not reach, and the walk is expensive — a repeated
+ * request for the same unreachable name would otherwise walk the whole graph again every time. Caching it at the client
+ * and at the edge is what turns a client that keeps asking into zero requests here.
+ *
+ * It has to expire quickly, though, because the answer can become wrong: a hosted plugin may start depending on the
+ * package, and a long-lived cached 404 would then keep the install failing even after the worker learned the name. One
+ * minute bounds that window without giving up the repeat-request saving, which matters far more for the requests that
+ * arrive in a burst than for one that arrives a day later.
+ */
+const DENIED_MAX_AGE_SECONDS = 60
+
+/**
  * Answer for a package this worker will not proxy.
  *
  * A 404 with an npm-shaped body is deliberate: npm and pnpm both report it as a missing package, which is the truth from
@@ -76,7 +115,7 @@ async function hostedNames(kv: KVNamespace): Promise<ReadonlySet<string>> {
  * @returns the response.
  */
 function denied(name: string): Response {
-  return json({ error: `not hosted here, and not a dependency of a hosted package: ${name}` }, 404)
+  return json({ error: `not hosted here, and not a dependency of a hosted package: ${name}` }, 404, DENIED_MAX_AGE_SECONDS)
 }
 
 /**
@@ -146,7 +185,7 @@ async function relay(request: Request, tarball: string): Promise<Response> {
  * @returns the index, or a 404 when it has not been published yet.
  */
 function index(): Response {
-  return json(INDEX, 200, true)
+  return json(INDEX, 200, INDEX_MAX_AGE_SECONDS)
 }
 
 /**
@@ -192,11 +231,28 @@ export async function handle(request: Request, env: Env): Promise<Response> {
   const decided = route(new URL(request.url), name => (name === found.name ? entry : undefined))
   switch (decided.kind) {
     case 'packument':
-      return json(entry.packument, 200, true)
+      return json(entry.packument, 200, PACKUMENT_MAX_AGE_SECONDS)
+    case 'manifest': {
+      // Resolved from the packument already in hand rather than proxied, for the same reason as the packument: the
+      // public registry holds no package under this name, so a forwarded request would 404 for a version this worker
+      // can answer. A tag is a valid specifier too (`latest`), which is why the tag map is consulted before the version
+      // list, exactly as the registry does.
+      const packument = entry.packument as {
+        readonly 'dist-tags'?: Readonly<Record<string, string>>
+        readonly versions?: Readonly<Record<string, unknown>>
+      }
+      const tagged = packument['dist-tags']?.[decided.specifier]
+      const version = tagged ?? decided.specifier
+      const manifest = packument.versions?.[version]
+      if (manifest === undefined) {
+        return json({ error: `${decided.name} has no version or tag ${JSON.stringify(decided.specifier)}` }, 404, DENIED_MAX_AGE_SECONDS)
+      }
+      return json(manifest, 200, PACKUMENT_MAX_AGE_SECONDS)
+    }
     case 'download':
       return relay(request, decided.tarball)
     case 'not-found':
-      return json({ error: decided.reason }, 404)
+      return json({ error: decided.reason }, 404, DENIED_MAX_AGE_SECONDS)
     case 'proxy':
       return proxy(request, upstream)
   }
