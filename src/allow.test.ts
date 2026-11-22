@@ -319,3 +319,42 @@ test('KV 写入失败时仍然拒绝', async () => {
     restore()
   }
 })
+
+test('重复解析同一条依赖链不再重写已有的授予', async () => {
+  // The free plan allows 1,000 KV writes a day, and a walk records every package it proves reachable. Two requests that
+  // share part of a dependency path reach those shared packages twice, and `seen` only deduplicates within one walk.
+  // Without the existence check the shared package is written again on the second request, spending the daily budget on
+  // an answer KV already holds.
+  const { restore } = serve({ 'dsh-x': ['shared', 'alpha'], 'dsh-y': ['shared', 'beta'] })
+  try {
+    const entries: Record<string, unknown> = {}
+    const writes: string[] = []
+    const store = {
+      async get(key: string) {
+        return entries[key] === undefined ? null : (entries[key] as string)
+      },
+      async put(key: string) {
+        writes.push(key)
+        entries[key] = '1'
+      },
+    } as unknown as KVNamespace
+    const own = async (): Promise<readonly string[] | undefined> => undefined
+    const hosts = (name: string): boolean => name === 'dsh-x' || name === 'dsh-y'
+
+    // The first request walks from `dsh-x` and records `shared`.
+    assert.equal(await allowed('alpha', store, 'https://up.test', hosts, own, ['dsh-x']), true)
+    assert.ok(writes.includes(`${ALLOW_PREFIX}shared`), '首次解析应当记录 shared')
+    const afterFirst = [...writes]
+
+    // The second request asks for a different package but walks through the same `shared` edge, which KV already holds.
+    assert.equal(await allowed('beta', store, 'https://up.test', hosts, own, ['dsh-y']), true)
+    const secondWrites = writes.slice(afterFirst.length)
+    assert.ok(secondWrites.includes(`${ALLOW_PREFIX}beta`), '第二个包本身仍应被记录')
+    assert.ok(
+      !secondWrites.includes(`${ALLOW_PREFIX}shared`),
+      'KV 已持有的 shared 不应在第二次请求里被重写',
+    )
+  } finally {
+    restore()
+  }
+})

@@ -147,6 +147,11 @@ async function resolve(name: string, upstream: string): Promise<Resolved | undef
  */
 async function remember(kv: KVNamespace, name: string): Promise<void> {
   try {
+    // Recorded only when absent. The walk reaches every package on a dependency path, so without this check one install
+    // rewrites the whole path even though a previous install already recorded it: the free plan allows 1,000 writes a
+    // day, and re-writing known answers spends that budget on nothing. The read is cheap against the write it saves, and
+    // the read quota is a hundred times the write quota.
+    if ((await kv.get(`${ALLOW_PREFIX}${name}`)) !== null) return
     await kv.put(`${ALLOW_PREFIX}${name}`, '1')
   } catch {
     // Nothing to do: the answer is already known, only the shortcut is lost.
@@ -238,7 +243,11 @@ export async function allowed(
   // A refusal that cannot be remembered still refuses: the walk reached no path here, and caching that is only a saving
   // for the next caller. Swallowed for the same reason as the grant above.
   try {
-    await kv.put(`${DENY_PREFIX}${name}`, '1', { expirationTtl: DENY_TTL_SECONDS })
+    // Re-writing a live denial would reset its TTL without changing what it says, so it is left alone while it holds.
+    // `allowed` already returns early on a live denial, so this only saves the write when two requests race.
+    if ((await kv.get(`${DENY_PREFIX}${name}`)) === null) {
+      await kv.put(`${DENY_PREFIX}${name}`, '1', { expirationTtl: DENY_TTL_SECONDS })
+    }
   } catch {
     // Nothing to do: the answer is already known, only the shortcut is lost.
   }
