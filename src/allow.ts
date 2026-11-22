@@ -17,9 +17,6 @@
 /** KV prefix marking a package as allowed to be proxied. Distinct from package records, which are bare names. */
 export const ALLOW_PREFIX = '__allow__/'
 
-/** Prefix marking a package as refused, so a denial is remembered as well as a grant. */
-export const DENY_PREFIX = '__deny__/'
-
 /** The fields a package's own manifest declares as dependencies. All of them have to be resolvable for an install. */
 const DEPENDENCY_FIELDS = ['dependencies', 'peerDependencies', 'optionalDependencies'] as const
 
@@ -38,15 +35,6 @@ const OPEN_SCOPES = ['@deepseek-ai/'] as const
 
 /** How many packages one walk may visit. A pathological graph must not exhaust the request budget. */
 const WALK_LIMIT = 64
-
-/**
- * How long a refusal is remembered.
- *
- * A grant is kept for good, because the dependency graph only grows: a package that is reachable now stays reachable.
- * A refusal has to expire, because the reason it was refused can change — a hosted plugin may start depending on the
- * package, and a permanent denial would then break its install with no way to recover except clearing KV by hand.
- */
-const DENY_TTL_SECONDS = 60 * 60 * 24
 
 /** The subset of a packument this module reads. */
 export interface Resolved {
@@ -175,8 +163,8 @@ export function openScope(name: string): boolean {
  * was asked for: the whole path from a root is part of the same dependency graph, so a later request for a package the
  * walk has already proven reachable costs one KV read and no network call.
  *
- * A denial is cached with a TTL rather than for good, because the graph can grow: a plugin may start depending on a
- * package that was refused before.
+ * Only grants are recorded. A refusal is the absence of a grant, so the same walk reproduces it without spending a write,
+ * and a package that a later plugin version starts depending on is then reachable without waiting for an entry to expire.
  *
  * A package this worker only proxies — a plugin published to npm — is a root as well, because the index points at this
  * domain for those too. Its own dependencies are not in KV, so they are resolved upstream like any other.
@@ -202,7 +190,6 @@ export async function allowed(
   // The vendor scope is answered directly rather than walked, for the reason OPEN_SCOPES records.
   if (openScope(name)) return true
   if ((await kv.get(`${ALLOW_PREFIX}${name}`)) !== null) return true
-  if ((await kv.get(`${DENY_PREFIX}${name}`)) !== null) return false
 
   // Breadth-first from the roots, so a direct dependency is found before a distant one. `seen` also guards the walk
   // against a dependency cycle.
@@ -240,16 +227,9 @@ export async function allowed(
     }
   }
 
-  // A refusal that cannot be remembered still refuses: the walk reached no path here, and caching that is only a saving
-  // for the next caller. Swallowed for the same reason as the grant above.
-  try {
-    // Re-writing a live denial would reset its TTL without changing what it says, so it is left alone while it holds.
-    // `allowed` already returns early on a live denial, so this only saves the write when two requests race.
-    if ((await kv.get(`${DENY_PREFIX}${name}`)) === null) {
-      await kv.put(`${DENY_PREFIX}${name}`, '1', { expirationTtl: DENY_TTL_SECONDS })
-    }
-  } catch {
-    // Nothing to do: the answer is already known, only the shortcut is lost.
-  }
+  // The walk found no path here, so the package is refused. The refusal is not recorded: a grant is worth caching
+  // because it is a fact that only grows, while a refusal is an absence that the same walk reproduces for free. Caching
+  // it would spend one write per refused package from a budget of a thousand, and a stale entry would then hide a
+  // package that a later plugin version does start depending on.
   return false
 }

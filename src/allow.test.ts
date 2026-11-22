@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ALLOW_PREFIX, allowed, DENY_PREFIX, dependenciesOf, openScope, requestedVersion } from './allow.ts'
+import { ALLOW_PREFIX, allowed, dependenciesOf, openScope, requestedVersion } from './allow.ts'
+import { DENY_PREFIX } from './registry/cache.ts'
 
 /** A KV namespace backed by a plain map, enough for the two calls `allowed` makes. */
 function kv(entries: Record<string, unknown> = {}): KVNamespace {
@@ -8,10 +9,8 @@ function kv(entries: Record<string, unknown> = {}): KVNamespace {
     async get(key: string) {
       return entries[key] === undefined ? null : (entries[key] as string)
     },
-    async put(key: string, value: string, options?: { expirationTtl?: number }) {
+    async put(key: string, value: string) {
       entries[key] = value
-      // Recorded so a test can tell a permanent grant from a refusal that is meant to expire.
-      if (options?.expirationTtl !== undefined) entries[`${key}#ttl`] = String(options.expirationTtl)
     },
   } as unknown as KVNamespace
 }
@@ -136,7 +135,7 @@ test('传递依赖被允许', async () => {
   }
 })
 
-test('无关的包被拒绝，且拒绝被记住', async () => {
+test('无关的包被拒绝，但不写任何缓存', async () => {
   const { restore } = serve({})
   try {
     const store = kv()
@@ -144,12 +143,34 @@ test('无关的包被拒绝，且拒绝被记住', async () => {
     const own = async (): Promise<readonly string[] | undefined> => []
     const first = await allowed('random-package', store, 'https://up.test', hosts, own, ['dsh-x'])
     assert.equal(first, false)
-    assert.equal(await store.get(`${DENY_PREFIX}random-package`), '1')
-    // A refusal has to expire, or a plugin that later gains this dependency would be blocked for good.
-    assert.ok((await store.get(`${DENY_PREFIX}random-package#ttl`)) !== null)
-    // A second request is answered from KV, so a client cannot force a fresh walk by repeating it.
+    // A refusal is the absence of a grant, so nothing is written: the write budget is a thousand a day on the free plan,
+    // and a refused install spends many of them one package at a time.
+    assert.equal(await store.get(`${DENY_PREFIX}random-package`), null)
+    // Nothing was granted along the way either, because the walk found no path.
+    assert.equal(await store.get(`${ALLOW_PREFIX}random-package`), null)
+    // A repeated request walks again rather than reading a stored refusal, and still refuses.
     const second = await allowed('random-package', store, 'https://up.test', hosts, own, ['dsh-x'])
     assert.equal(second, false)
+    assert.equal(await store.get(`${DENY_PREFIX}random-package`), null)
+  } finally {
+    restore()
+  }
+})
+
+test('曾被拒绝的包在被真正依赖后立即放行，无需等待缓存过期', async () => {
+  const { restore } = serve({})
+  try {
+    const store = kv()
+    const hosts = (name: string): boolean => name === 'dsh-x'
+    const roots = ['dsh-x']
+    const ask = async (own: () => Promise<readonly string[] | undefined>): Promise<boolean> =>
+      allowed('late-dependency', store, 'https://up.test', hosts, own, roots)
+
+    // First the plugin does not depend on it, so the walk refuses it.
+    assert.equal(await ask(async () => ['other']), false)
+    // Then the plugin starts depending on it. Had the refusal been recorded, this would still be refused until the entry
+    // expired, which is the failure mode that made an earlier worker break installs long after the bug was fixed.
+    assert.equal(await ask(async () => ['late-dependency']), true)
   } finally {
     restore()
   }
