@@ -14,9 +14,26 @@ name: PR
 # Every pull request runs, not just those targeting `main`, because a submission aimed at another branch still has to be
 # seen in order to be rejected: `src/contrib/check.ts` checks the base branch, and a workflow that never ran could not
 # report that a submission has no business targeting anything but `main`.
+#
+# `pull_request_target` rather than `pull_request`, and that choice is what makes the rules current.
+#
+# A `pull_request` run uses the workflow file carried by the pull request's *merge* commit, and that merge commit is built
+# from the base commit the pull request was opened against. A pull request opened before a rule changed therefore keeps
+# being judged by the rule that existed then, however many times it is re-run, until its branch is updated — which a
+# contributor has no way of knowing to do. `pull_request_target` always loads this file from the default branch, so the
+# checks that run are the ones `main` has right now, no matter how old the pull request is.
+#
+# The cost is that this trigger runs with a write token in the base repository's context, so the separation below is not
+# decorative: the checked-out tree is the base commit, which supplies every file that gets *executed*, and the pull
+# request contributes only `plugins/`, which is read as data. Nothing from the head commit is imported, sourced, or run.
+#
+# Every pull request runs, including drafts, because a draft aimed at another branch still has to be seen before it can be
+# closed, and a draft that fails has to be reported to its author so they can fix it before marking it ready.
 on:
-  pull_request:
+  pull_request_target:
 
+# `contents: read` is all the checks need. The comment on a run is posted by `pr-result.yml`, which is a separate
+# workflow listening on `workflow_run`, so nothing here writes to the repository.
 permissions:
   contents: read
 
@@ -30,13 +47,44 @@ jobs:
     name: Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      # The base commit, checked out at the workspace root. Everything that runs comes from here: the scripts, the
+      # configuration, the type definitions, and the tests. A pull request cannot alter any of it.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      # The pull request's own commits, kept in a subdirectory and used for exactly one thing: its `plugins/` tree, which
+      # the step below copies over the base one. `allow-unsafe-pr-checkout` is required because this is a
+      # `pull_request_target` run and the checkout action refuses untrusted code there by default. The flag is safe here
+      # only because nothing in that directory is executed: it is read as YAML, and it is deleted before any build runs.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: .pr
+          allow-unsafe-pr-checkout: true
+
+      # The head tree exists only as a git object for the checker to read the submitted `plugin.yml` from, and only as a
+      # source of `plugins/`. The working copy of the head is removed so that the build, the type check and the tests
+      # below run against files that came from `main`: a submission that added a test, a dependency or a source file
+      # would otherwise be silently included in its own judgement.
+      # The head commit is fetched by SHA before its working copy is discarded. The checker reads the submitted
+      # `plugin.yml` out of the commit rather than off disk, so the object has to survive the cleanup below; fetching it
+      # into a ref is what keeps it reachable. GitHub serves a pull request's head by SHA even when it lives only in a
+      # fork, which is the case a plain `git fetch` of the branch could not serve.
+      - name: Keep only the submitted plugins
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$HEAD_SHA"
+          rm -rf plugins
+          cp -r .pr/plugins .
+          rm -rf .pr
 
       - uses: pnpm/action-setup@v6
         with:
           version: 10
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -47,40 +95,21 @@ jobs:
       # Runs before anything is built, so a pull request that cannot be accepted fails in seconds instead of after a
       # full registry and index build.
       #
-      # Both commits are named explicitly rather than diffed as `base...HEAD`. `checkout` puts the pull request's *merge*
-      # commit in `HEAD`, a shallow clone carries neither of its parents, and the `--depth=1` fetch below lands on a tip
-      # with no ancestry in common with that merge commit, so a three-dot range has no merge base to resolve and fails
-      # before reading a single file. Comparing the base commit and `HEAD` as two trees needs no shared history.
+      # Both commits are named explicitly rather than diffed as `base...HEAD`. The two were fetched independently and
+      # need no ancestry in common: `git diff` compares two trees, and `git log base..head` walks what the head reaches
+      # that the base does not. A three-dot range would need a merge base, which two unrelated tips do not have.
       #
-      # The checker is taken from `main` as it stands when the run starts, not from the checkout and not from the commit
-      # the pull request was opened against.
-      #
-      # A `pull_request` run executes the workflow file carried by the merge commit, and that merge commit is built from
-      # the base commit the pull request was opened against. A pull request opened before a rule changed therefore keeps
-      # being judged by the rule that existed then, however many times it is re-run, until its branch is updated. Reading
-      # the checker from `main` at run time means the rule that applies is always the current one.
-      #
-      # The tree is unpacked into the workspace rather than a temporary directory because the checker shells out to `git`,
-      # so it has to run somewhere `git` sees the checkout, and it resolves packages such as `yaml` from the installed
-      # `node_modules`, which it finds by walking up from its own directory. It is added to `.git/info/exclude` first:
-      # otherwise the unpacked copy of the repository would count as added files and every submission would look like it
-      # touched the whole tree.
+      # The checker itself comes from the base checkout at the workspace root, so the rules that judge a submission are
+      # never the ones it supplied.
       #
       # `--target` is passed because a plugin submission may only target `main`; the check rejects one aimed elsewhere
       # rather than letting it through to a merge that could never publish.
       - name: Check the commit subject and the submitted metadata
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE_REF: ${{ github.base_ref }}
-        run: |
-          git fetch --no-tags --depth=1 origin "$BASE_SHA"
-          git fetch --no-tags --depth=1 origin main
-          RULE_SHA=$(git rev-parse FETCH_HEAD)
-          echo "checking with the rules at $RULE_SHA"
-          echo '.checker/' >> .git/info/exclude
-          mkdir -p .checker
-          git archive "$RULE_SHA" | tar -x -C .checker
-          node .checker/src/contrib/check.ts --base "$BASE_SHA" --head HEAD --target "$BASE_REF"
+        run: node src/contrib/check.ts --base "$BASE_SHA" --head "$HEAD_SHA" --target "$BASE_REF"
 
       # The registry data is built first because the index is read from these packuments and the worker imports the
       # index, so `pnpm check` cannot type-check the worker until both exist. This is the same order `registry.yml` uses

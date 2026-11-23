@@ -2,13 +2,14 @@ name: PR result
 
 # Posts the one comment a pull request gets from its check run.
 #
-# This is a separate, privileged workflow rather than a step inside `pr.yml` because a pull request from a fork runs with
-# a read-only token: it cannot comment on itself. A `workflow_run` trigger runs in the base repository's context, so the
-# token here can write. Nothing is taken from the untrusted run except the conclusions GitHub itself assigned to its
-# steps, which a fork cannot forge; the table is rendered from the jobs API in `src/contrib/report.ts`.
+# This is a separate workflow rather than a step inside `pr.yml` so that reporting is never part of judging. A comment is
+# written from outside the run it describes: it reads the conclusions GitHub assigned to the check's steps and renders
+# them, and it closes a submission that targets another branch. Keeping that in its own workflow means a failure to
+# comment cannot affect a failure to check, and the checks themselves stay read-only.
 #
-# `pull_request_target` is not used: it would run this repository's workflow file with the fork's code checked out, which
-# is the arrangement that leaks write tokens.
+# `pr.yml` triggers on `pull_request_target`, whose name is what the `workflow_run.event` filter below matches. That
+# trigger already runs in the base repository's context with a write token, so the comment could be posted from there;
+# it is still kept separate so that the check job holds `contents: read` alone.
 
 on:
   workflow_run:
@@ -24,16 +25,16 @@ jobs:
   comment:
     # A run from a fork's `pull_request` event still reports here, and the pull request it belongs to is reachable from
     # the run's own metadata.
-    if: github.event.workflow_run.event == 'pull_request'
+    if: github.event.workflow_run.event == 'pull_request_target'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           # Only this file and the renderer are used; the pull request's own tree is never checked out.
           sparse-checkout: src/contrib
           sparse-checkout-cone-mode: false
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
 
