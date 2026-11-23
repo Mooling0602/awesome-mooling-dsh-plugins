@@ -390,3 +390,58 @@ test('允许的请求记录整条已证明的路径', async () => {
     restore()
   }
 })
+
+test('profile 已声明的依赖被直接放行，不走遍历', async () => {
+  // Installing a plugin runs `pnpm add --registry=<this worker>`, which re-resolves the whole profile tree even when
+  // every version is locked, so a dependency the profile declares is asked for here even though no hosted package
+  // reaches it. Refusing it would fail an install that did not mean to touch that dependency at all.
+  const { restore } = serve({ 'dsh-x': ['dep-a'] })
+  try {
+    const store = kv()
+    const hosts = (name: string): boolean => name === 'dsh-x'
+    let fetched = 0
+    const before = globalThis.fetch
+    globalThis.fetch = (async (): Promise<Response> => {
+      fetched += 1
+      return new Response('{}', { status: 200 })
+    }) as typeof fetch
+    try {
+      const own = async (): Promise<readonly string[] | undefined> => undefined
+      assert.equal(await allowed('@openai/codex', store, 'https://up.test', hosts, own, ['dsh-x']), true)
+      // Answered from the list, so no packument is fetched and no walk is started.
+      assert.equal(fetched, 0)
+    } finally {
+      globalThis.fetch = before
+    }
+  } finally {
+    restore()
+  }
+})
+
+test('profile 依赖的平台包同样被放行', async () => {
+  // A platform package is what the client actually downloads for the architecture it runs on, so it has to be answered
+  // as well, and it is named individually rather than matched by prefix.
+  const { restore } = serve({})
+  try {
+    const store = kv()
+    const hosts = (): boolean => false
+    const own = async (): Promise<readonly string[] | undefined> => undefined
+    assert.equal(await allowed('@openai/codex-linux-x64', store, 'https://up.test', hosts, own, []), true)
+  } finally {
+    restore()
+  }
+})
+
+test('profile 依赖之外的同 scope 包仍被拒绝', async () => {
+  // The list names packages, it does not open `@openai/`: a neighbouring package must still be refused, or the domain
+  // would proxy the whole scope on this account's quota.
+  const { restore } = serve({})
+  try {
+    const store = kv()
+    const hosts = (): boolean => false
+    const own = async (): Promise<readonly string[] | undefined> => undefined
+    assert.equal(await allowed('@openai/some-other-package', store, 'https://up.test', hosts, own, []), false)
+  } finally {
+    restore()
+  }
+})
