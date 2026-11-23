@@ -36,31 +36,6 @@ const DEPENDENCY_FIELDS = ['dependencies', 'peerDependencies', 'optionalDependen
  */
 const OPEN_SCOPES = ['@deepseek-ai/'] as const
 
-/**
- * Names answered without a walk because a DSH profile already depends on them.
- *
- * `pnpm add <plugin> --registry=<this worker>` replaces the registry for the whole dependency tree, not only for the
- * plugin being added, and pnpm re-resolves that tree even when the lockfile already pins every version. Any dependency
- * the profile declares is therefore asked for here too, reachable or not. A profile that names an npm alias such as
- * `"dsh-codex-subtask-cli": "npm:@openai/codex@0.167.0"` could otherwise not install any plugin: the walk cannot reach
- * `@openai/codex`, so every install would fail on a package it did not ask to change.
- *
- * Each entry carries its platform packages, which the client resolves from the parent's optional dependencies. They are
- * listed rather than matched by prefix because `@openai/codex` is not the only `codex-` name on npm.
- *
- * Deliberately a fixed list rather than opening `@openai/`: that scope holds a large corpus of unrelated packages, and
- * opening it would proxy all of them on this account's quota. A name belongs here when a profile is known to declare it.
- */
-const PROFILE_DEPENDENCIES: ReadonlySet<string> = new Set([
-  '@openai/codex',
-  '@openai/codex-darwin-arm64',
-  '@openai/codex-darwin-x64',
-  '@openai/codex-linux-arm64',
-  '@openai/codex-linux-x64',
-  '@openai/codex-win32-arm64',
-  '@openai/codex-win32-x64',
-])
-
 /** How many packages one walk may visit. A pathological graph must not exhaust the request budget. */
 const WALK_LIMIT = 64
 
@@ -233,9 +208,6 @@ export async function allowed(
   if (hosts(name)) return true
   // The vendor scope is answered directly rather than walked, for the reason OPEN_SCOPES records.
   if (openScope(name)) return true
-  // A dependency the profile already declares is not reachable from a hosted package, so the walk would refuse it and
-  // break every install. See PROFILE_DEPENDENCIES.
-  if (PROFILE_DEPENDENCIES.has(name)) return true
   if ((await kv.get(`${ALLOW_PREFIX}${name}`)) !== null) return true
   if ((await kv.get(`${DENY_PREFIX}${name}`)) !== null) return false
 
