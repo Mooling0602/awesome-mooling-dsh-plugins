@@ -53,6 +53,52 @@ const DISPATCH_TYPES: readonly DispatchType[] = ['npmjs', 'tarball', 'source']
 /** The one field whose value is a nested mapping rather than a scalar. */
 const NESTED = 'readme'
 
+/**
+ * The shape of a plugin id.
+ *
+ * An id becomes a directory name, so it carries the restrictions a path segment does: lowercase, digits and hyphens, and
+ * a letter first so a name cannot look like a number or begin with a hyphen. Uppercase is excluded because macOS and
+ * Windows compare file names case-insensitively, where `dsh-Foo` and `dsh-foo` are one directory, and because npm has
+ * refused new package names with capitals since 2017.
+ *
+ * Two shapes that pass here are refused later by {@link shardOf}, which needs the first two letters of the name without
+ * its `dsh-` prefix and therefore rejects `a--b` or `dsh-x-`. Leaving that to `shardOf` keeps one rule in one place; the
+ * id only has to be a name a directory can carry.
+ */
+const ID = /^[a-z][a-z0-9-]*$/u
+
+/**
+ * Ids a plugin may not take, though they are otherwise well-formed.
+ *
+ * Each of these is published on npm by another project: `dsh` is a shell written in JavaScript, while `dsh-plugin` and
+ * `dsh-plugins` are other tools for browsing and installing DeepSeek Harness plugins. A plugin here names itself after
+ * what it is rather than after the registry, so an id spelled like one of these would claim a name this project does not
+ * own, and readers would arrive expecting a different plugin.
+ *
+ * Only the id is held back. The `package` field names something published elsewhere, and whether that name is free is
+ * settled by the registry it is published to, not by this list.
+ */
+const RESERVED_IDS: readonly string[] = ['dsh', 'dsh-plugin', 'dsh-plugins']
+
+/**
+ * The length limit shared by a plugin id and an npm package name.
+ *
+ * 214 is npm's own ceiling and the figure DSH uses in `dsh-plugin-manager`, so the two agree on where a name becomes too
+ * long. It is also well under the 255 bytes a file name gets on the common filesystems, which matters because an id is
+ * used as a directory name.
+ */
+const NAME_MAX_LENGTH = 214
+
+/**
+ * The shape of an npm package name, copied from DSH rather than re-derived.
+ *
+ * This is `/^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/` in `dsh-plugin-manager`'s `install-spec.ts`, where it
+ * guards what may be installed. Keeping the same expression means a `plugin.yml` cannot pass here and then fail to
+ * install, and it allows the scoped names and underscores npm itself allows even though no plugin in this repository has
+ * needed either yet.
+ */
+const PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/u
+
 /** Whether a value is a non-empty string. */
 function filled(value: unknown): value is string {
   return typeof value === 'string' && value !== ''
@@ -176,6 +222,33 @@ export function parsePluginYml(text: string, file: string): Omit<Plugin, 'shard'
   }
   const missing = FIELDS.filter(field => !values.has(field))
   if (missing.length > 0) throw new Error(`${file}: missing field(s) ${missing.join(', ')}`)
+  // The id names the plugin's directory, so an unusable one would be unreachable rather than merely odd. Checking it here
+  // rather than leaving it to `shardOf` is what turns a confusing "cannot derive a shard" into a message about the file.
+  const id = values.get('id') as string
+  if (id.length > NAME_MAX_LENGTH) {
+    throw new Error(`${file}: id is ${id.length} characters; use at most ${NAME_MAX_LENGTH}`)
+  }
+  if (!ID.test(id)) {
+    throw new Error(
+      `${file}: id ${JSON.stringify(id)} must be lowercase letters, digits and hyphens, starting with a letter, for example "dsh-my-plugin"`,
+    )
+  }
+  if (RESERVED_IDS.includes(id)) {
+    throw new Error(
+      `${file}: id ${JSON.stringify(id)} is reserved: another project publishes that name on npm, so pick a name that describes the plugin itself, for example "dsh-my-plugin"`,
+    )
+  }
+  // The package is what a client installs, so it has to satisfy npm's own rule; a name npm refuses would be published as
+  // a packument nothing could install.
+  const packageName = values.get('package') as string
+  if (packageName.length > NAME_MAX_LENGTH) {
+    throw new Error(`${file}: package is ${packageName.length} characters; use at most ${NAME_MAX_LENGTH}`)
+  }
+  if (!PACKAGE_NAME.test(packageName)) {
+    throw new Error(
+      `${file}: package ${JSON.stringify(packageName)} is not a valid npm package name, for example "dsh-my-plugin" or "@scope/dsh-my-plugin"`,
+    )
+  }
   const source = values.get('source') as Source
   if (!SOURCES.includes(source)) {
     throw new Error(`${file}: unsupported custom git hosting service ${JSON.stringify(source)}: source must be one of ${SOURCES.join(', ')}`)
@@ -190,8 +263,8 @@ export function parsePluginYml(text: string, file: string): Omit<Plugin, 'shard'
     )
   }
   return {
-    id: values.get('id') as string,
-    package: values.get('package') as string,
+    id,
+    package: packageName,
     source,
     repo: values.get('repo') as string,
     readme: values.get(NESTED) as Readme,

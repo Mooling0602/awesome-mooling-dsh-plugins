@@ -42,11 +42,11 @@ const CHECKS: readonly { readonly name: string; readonly check: Bilingual; reado
     about: { en: 'the lockfile resolves without changes', zh: '锁文件无需改动即可解析' },
   },
   {
-    name: 'Check the commit subject and the submitted metadata',
+    name: 'Check the pull request title and the submitted metadata',
     check: { en: 'Submission', zh: '投稿内容' },
     about: {
-      en: 'one plugin.yml, valid fields, correct shard',
-      zh: '仅一个 plugin.yml，字段有效，分片正确',
+      en: 'one plugin.yml, valid fields, correct shard, the title names it',
+      zh: '仅一个 plugin.yml，字段有效，分片正确，标题指明插件',
     },
   },
   {

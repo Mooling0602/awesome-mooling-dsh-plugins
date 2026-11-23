@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { check, checkBase, checkDiff, checkMetadata, checkSubject, isSubmission, branchPoint, changedFiles, type Changed } from './check.ts'
+import { check, checkBase, checkDiff, checkMetadata, checkSubject, checkTitle, warnSubject, warnSubjects, isSubmission, branchPoint, changedFiles, type Changed } from './check.ts'
 
 /** One added metadata file at its correct path. */
 const GOOD: Changed[] = [{ status: 'A', path: 'plugins/by-name/dsh-hi/dsh-hint-shell/plugin.yml' }]
@@ -244,17 +244,20 @@ test('check passes a valid pull request', () => {
   const previous = process.cwd()
   try {
     process.chdir(root)
-    assert.deepEqual(check(['add dsh-hint-shell'], GOOD), [])
+    assert.deepEqual(check(['any message at all'], GOOD, undefined, 'HEAD', 'feat: add or update plugin dsh-hint-shell'), [])
   } finally {
     process.chdir(previous)
     removeTree(root)
   }
 })
 
-test('check reports both a bad subject and a bad shape', () => {
+test('the subject warning and the shape check report their own halves', () => {
+  // The wording of a commit is a warning and the placement of the file is a problem, so the two are answered by two
+  // functions. Keeping them apart is what lets a submission with an awkward message still merge.
+  assert.ok(warnSubjects(['']).some(warning => warning.includes('is empty')))
   const problems = check([''], [{ status: 'A', path: 'plugins/by-name/dsh-hint-shell/plugin.yml' }])
-  assert.ok(problems.some(problem => problem.includes('is empty')))
   assert.ok(problems.some(problem => problem.includes('not at the path one belongs at')))
+  assert.ok(!problems.some(problem => problem.includes('is empty')))
 })
 
 test('check rejects a pull request with no commits', () => {
@@ -317,7 +320,7 @@ test('check rejects a submission aimed at another branch', () => {
 })
 
 test('check accepts a submission aimed at main', () => {
-  assert.deepEqual(check(['feat: add a plugin'], GOOD, 'main'), [])
+  assert.deepEqual(check(['any message'], GOOD, 'main', 'HEAD', 'feat: add or update plugin dsh-hint-shell'), [])
 })
 
 test('check ignores the branch for an ordinary pull request', () => {
@@ -326,7 +329,7 @@ test('check ignores the branch for an ordinary pull request', () => {
 })
 
 test('check does not check the branch when none is given', () => {
-  assert.deepEqual(check(['feat: add a plugin'], GOOD), [])
+  assert.deepEqual(check(['any message'], GOOD, undefined, 'HEAD', 'feat: add or update plugin dsh-hint-shell'), [])
 })
 
 test('changedFiles reports what the pull request added once the base branch has moved on', () => {
@@ -399,4 +402,57 @@ test('branchPoint falls back to the head when the histories are unrelated', () =
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+test('checkTitle accepts the documented title', () => {
+  assert.deepEqual(checkTitle('feat: add or update plugin dsh-hint-shell', 'dsh-hint-shell'), [])
+})
+
+test('checkTitle rejects a title naming another plugin', () => {
+  const problems = checkTitle('feat: add or update plugin dsh-other', 'dsh-hint-shell')
+  assert.equal(problems[0], 'the pull request title is "feat: add or update plugin dsh-other", but a plugin submission uses exactly "feat: add or update plugin dsh-hint-shell"')
+})
+
+test('checkTitle tolerates surrounding whitespace', () => {
+  // GitHub trims a title when it stores it, so a stray space is not something a contributor can act on.
+  assert.deepEqual(checkTitle('  feat: add or update plugin dsh-hint-shell  ', 'dsh-hint-shell'), [])
+})
+
+test('checkTitle rejects a title that only looks close', () => {
+  for (const title of ['feat: add a plugin', 'WIP', 'feat: add or update plugin', 'feat: add or update plugin dsh-hint-shell Extra']) {
+    assert.notDeepEqual(checkTitle(title, 'dsh-hint-shell'), [], title)
+  }
+})
+
+test('warnSubject stays quiet about a conventional subject', () => {
+  assert.deepEqual(warnSubject('fix: repair the worker'), [])
+  assert.deepEqual(warnSubject('feat(registry): publish a new shard'), [])
+})
+
+test('warnSubject warns about a subject that is not conventional', () => {
+  // Advisory only: a contributor who pushes a fix to a submission would otherwise have to repeat the same title, and a
+  // squash-merge discards these messages anyway.
+  assert.deepEqual(warnSubject('随便写'), ['the subject is not a conventional commit such as "fix: repair the worker"'])
+})
+
+test('warnSubject does not pile a second complaint on an empty subject', () => {
+  assert.deepEqual(warnSubject(''), ['the commit subject is empty'])
+})
+
+test('warnSubjects names the commit each warning came from', () => {
+  assert.deepEqual(warnSubjects(['fix: repair the worker', 'WIP']), [
+    'commit "WIP": the subject is not a conventional commit such as "fix: repair the worker"',
+  ])
+})
+
+test('check does not reject a submission for an unconventional commit message', () => {
+  // The message is a warning, so a submission whose title is right passes even when its commits say anything.
+  assert.deepEqual(check(['WIP', 'another message'], GOOD, 'main', 'HEAD', 'feat: add or update plugin dsh-hint-shell'), [])
+})
+
+test('check leaves an ordinary pull request to the conventional form', () => {
+  // A change to the repository itself is reviewed by a person, and `DOCS.md` asks those for Conventional Commits rather
+  // than for the submission form.
+  const ordinary: Changed[] = [{ status: 'M', path: 'src/worker.ts' }]
+  assert.deepEqual(check(['chore: tidy up'], ordinary, 'main'), [])
 })

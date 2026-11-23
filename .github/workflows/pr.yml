@@ -120,12 +120,18 @@ jobs:
       #
       # `--target` is passed because a plugin submission may only target `main`; the check rejects one aimed elsewhere
       # rather than letting it through to a merge that could never publish.
-      - name: Check the commit subject and the submitted metadata
+      #
+      # `--title` is passed and `--base` is not used for the message because a submission is squash-merged with its title
+      # as the commit message, so the title is what names the plugin in the index. The title travels through the
+      # environment rather than being interpolated into the script: it is written by a contributor, and a title carrying a
+      # quote, a backtick or a `$` would otherwise be expanded by the shell before the checker ever saw it.
+      - name: Check the pull request title and the submitted metadata
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE_REF: ${{ github.base_ref }}
-        run: node src/contrib/check.ts --base "$BASE_SHA" --head "$HEAD_SHA" --target "$BASE_REF"
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: node src/contrib/check.ts --base "$BASE_SHA" --head "$HEAD_SHA" --target "$BASE_REF" --title "$PR_TITLE"
 
       # The registry data is built first because the index is read from these packuments and the worker imports the
       # index, so `pnpm check` cannot type-check the worker until both exist. This is the same order `registry.yml` uses

@@ -44,8 +44,10 @@ export interface Changed {
 /**
  * Check a commit subject line.
  *
- * Only the first line is read. The wording is not inspected: a submission form writes it, so a missing type prefix is
- * not a fault in the contribution.
+ * Only the first line is read, and the wording is not inspected here: the wording `DOCS.md` fixes belongs to a
+ * submission's pull request title, where {@link checkTitle} judges it and the plugin id is available to compare against.
+ * What remains is what holds for every commit in this repository, whether it submits a plugin or changes the registry
+ * itself.
  * @param subject - the first line of a commit message.
  * @returns the problems found, empty when the subject is usable.
  */
@@ -230,11 +232,103 @@ export function checkBase(branch: string): string[] {
 }
 
 /**
+ * The one pull request title a plugin submission may carry.
+ *
+ * `DOCS.md` states the title as a literal form and not as an example: `feat: add or update plugin <dsh-plugin-id>`. The
+ * title matters because a submission is squash-merged with the title as the commit message, so this is what the plugin
+ * index will show for the contribution. Comparing the whole string is deliberate: a title that continues past the plugin
+ * id would become a different commit message.
+ */
+const SUBMISSION_PREFIX = 'feat: add or update plugin '
+
+/**
+ * The shape of a Conventional Commit subject.
+ *
+ * `DOCS.md` asks a change to the repository itself for Conventional Commits. Commit messages on a submission are not
+ * held to this: a contributor who pushes a fix an hour later has to write a new message, and requiring the same wording
+ * twice would only make the branch awkward to work with. The squash-merge discards those messages in favour of the title
+ * anyway, so what is checked here is a courtesy rather than a gate.
+ */
+const CONVENTIONAL = /^[a-z][a-z0-9]*(?:\([^()\s]+\))?!?: \S/
+
+/**
+ * Check the pull request title of a submission.
+ *
+ * Nothing else in a pull request is judged by its wording. The body is not read at all, and the commits are only warned
+ * about, so this is the single place where a submission has to say something specific: the plugin id has to appear in
+ * the title because the title is what lands on `main`.
+ * @param title - the pull request title.
+ * @param id - the plugin id the submitted metadata declares.
+ * @returns the problems found, empty when the title matches.
+ */
+export function checkTitle(title: string, id: string): string[] {
+  const expected = `${SUBMISSION_PREFIX}${id}`
+  if (title.trim() === expected) return []
+  return [
+    `the pull request title is ${JSON.stringify(title)}, but a plugin submission uses exactly ${JSON.stringify(expected)}`,
+    'The title becomes the commit message when the pull request is squash-merged, so it is what the plugin index records.',
+  ]
+}
+
+/**
+ * Warn about what a commit subject looks like.
+ *
+ * These are advisory. A contributor pushing a second commit to a submission would otherwise have to repeat the same
+ * title as the message, and a message that a squash-merge discards is not worth rejecting a pull request over.
+ * @param subject - the first line of a commit message.
+ * @returns the warnings, empty when the subject raises none.
+ */
+export function warnSubject(subject: string): string[] {
+  const warnings = checkSubject(subject)
+  // An empty subject is already reported by `checkSubject`; testing the pattern against it would add a second complaint
+  // about the same line.
+  if (subject.trim() !== '' && !CONVENTIONAL.test(subject)) {
+    warnings.push('the subject is not a conventional commit such as "fix: repair the worker"')
+  }
+  return warnings
+}
+
+/**
+ * Collect the warnings a pull request's commits raise.
+ * @param subjects - the commit subjects it carries.
+ * @returns one warning per problem, each naming the commit it came from.
+ */
+export function warnSubjects(subjects: readonly string[]): string[] {
+  const warnings: string[] = []
+  for (const subject of subjects) {
+    for (const warning of warnSubject(subject)) warnings.push(`commit ${JSON.stringify(subject)}: ${warning}`)
+  }
+  return warnings
+}
+
+/**
+ * Read the plugin id a metadata file declares, without validating the rest of it.
+ * @param path - repository-relative path of the metadata file.
+ * @param head - the commit to read it from.
+ * @returns the id, or `null` when the file cannot be read or declares none.
+ */
+function submittedId(path: string, head: string): string | null {
+  let text: string
+  try {
+    text = execFileSync('git', ['show', `${head}:${path}`], { encoding: 'utf8' })
+  } catch {
+    return null
+  }
+  const match = /^id:\s*(\S+)\s*$/m.exec(text)
+  return match?.[1] ?? null
+}
+
+/**
  * Decide whether a pull request passes.
+ *
+ * Only the file changes decide this. A pull request that submits a plugin is judged on where the file sits, what it
+ * says, which branch the pull request targets, and whether the title names it; the wording of its commits is reported
+ * separately as a warning, and the body is never read.
  * @param subjects - the commit subjects it carries.
  * @param changed - the files it touches.
  * @param branch - the base branch it targets, when known.
  * @param head - the commit under review, where a submitted file is read from.
+ * @param title - the pull request title, when known.
  * @returns the problems found, empty when it passes.
  */
 export function check(
@@ -242,12 +336,10 @@ export function check(
   changed: readonly Changed[],
   branch?: string,
   head = 'HEAD',
+  title = '',
 ): string[] {
   const problems: string[] = []
   if (subjects.length === 0) problems.push('the pull request carries no commits')
-  for (const subject of subjects) {
-    for (const problem of checkSubject(subject)) problems.push(`commit ${JSON.stringify(subject)}: ${problem}`)
-  }
   if (changed.length === 0) {
     problems.push('the diff is empty: this pull request changes no file')
     return problems
@@ -259,7 +351,15 @@ export function check(
   const shape = checkDiff(changed)
   problems.push(...shape)
   // Only a well-shaped diff names a file worth reading; a rejected shape already explained itself.
-  if (shape.length === 0 && changed[0] !== undefined) problems.push(...checkMetadata(changed[0].path, head))
+  if (shape.length === 0 && changed[0] !== undefined) {
+    const path = changed[0].path
+    const metadata = checkMetadata(path, head)
+    problems.push(...metadata)
+    // The title names the plugin id, so the id has to be readable before the title can be judged. When the metadata is
+    // broken the problems above already say why, and guessing an id here would only add a second complaint.
+    const id = metadata.length === 0 ? submittedId(path, head) : null
+    if (id !== null) problems.push(...checkTitle(title, id))
+  }
   return problems
 }
 
@@ -280,10 +380,18 @@ if (invokedDirectly()) {
   // The branch a pull request targets is only known inside a pull request event; a local run has no target to check.
   const refFlag = process.argv.indexOf('--target')
   const target = refFlag === -1 ? undefined : process.argv[refFlag + 1]
+  // The title is what a squash-merge turns into the commit message, so a submission is judged by it rather than by its
+  // commits. A local run has no title, and an empty one only fails a submission, which is the right answer for a checkout
+  // that cannot say what it is about to be merged as.
+  const titleFlag = process.argv.indexOf('--title')
+  const title = titleFlag === -1 ? '' : process.argv[titleFlag + 1] ?? ''
   const from = base ?? execFileSync('git', ['merge-base', 'origin/main', head], { encoding: 'utf8' }).trim()
   const subjects = subjectsOf(from, head)
   const changed = changedFiles(from, head)
-  const problems = check(subjects, changed, target, head)
+  // Warnings are advisory and printed before the verdict, so a run that passes still shows them without the exit code
+  // suggesting otherwise. Nothing here can fail a pull request.
+  for (const warning of warnSubjects(subjects)) console.error(`warning: ${warning}`)
+  const problems = check(subjects, changed, target, head, title)
   if (problems.length > 0) {
     console.error('This pull request cannot be merged:\n')
     for (const problem of problems) console.error(`  ${problem}`)
@@ -292,7 +400,7 @@ if (invokedDirectly()) {
   }
   console.log(
     isSubmission(changed)
-      ? 'plugin submission: subject, base branch, diff shape and metadata are valid'
+      ? 'plugin submission: title, base branch, diff shape and metadata are valid'
       : `ordinary pull request: ${changed.length} file(s) for review`,
   )
 }

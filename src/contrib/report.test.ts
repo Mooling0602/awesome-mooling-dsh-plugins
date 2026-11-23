@@ -9,7 +9,7 @@ const PASSING: Job[] = [
     steps: [
       { name: 'Checkout', conclusion: 'success' },
       { name: 'Dependencies', conclusion: 'success' },
-      { name: 'Check the commit subject and the submitted metadata', conclusion: 'success' },
+      { name: 'Check the pull request title and the submitted metadata', conclusion: 'success' },
       { name: 'Build registry data', conclusion: 'success' },
       { name: 'Build index', conclusion: 'success' },
       { name: 'Typecheck', conclusion: 'success' },
@@ -134,7 +134,7 @@ test('render reports a draft failure in both languages and points at the log', (
     {
       steps: [
         { name: 'Dependencies', conclusion: 'success' },
-        { name: 'Check the commit subject and the submitted metadata', conclusion: 'failure' },
+        { name: 'Check the pull request title and the submitted metadata', conclusion: 'failure' },
         { name: 'Build registry data', conclusion: 'skipped' },
         { name: 'Build index', conclusion: 'skipped' },
         { name: 'Typecheck', conclusion: 'skipped' },

@@ -235,3 +235,75 @@ test('checkPluginLocation 拒绝放错 shard', () => {
 test('FIELDS 恰好是六个字段', () => {
   assert.deepEqual([...FIELDS], ['id', 'package', 'source', 'repo', 'readme', 'dispatch-type'])
 })
+
+/** The good file with one field replaced, so each id and package case reads on its own. */
+function withField(field: 'id' | 'package', value: string): string {
+  return GOOD.split('\n').map(line => (line.startsWith(`${field}: `) ? `${field}: ${value}` : line)).join('\n')
+}
+
+test('parsePluginYml 接受小写字母数字和连字符组成的 id', () => {
+  for (const id of ['dsh-mloader', 'dsh-hint-shell', 'a', 'a1b2', 'dsh-x-', 'x--y']) {
+    assert.equal(parsePluginYml(withField('id', id), 'p.yml').id, id)
+  }
+})
+
+test('parsePluginYml 拒绝不是目录名的 id', () => {
+  // 大写会和大小写不敏感的文件系统冲突，而 id 就是目录名。
+  for (const id of ['DSH-Mloader', 'Dsh-mloader', 'dsh-Mloader']) {
+    assert.throws(() => parsePluginYml(withField('id', id), 'p.yml'), /must be lowercase letters, digits and hyphens/u)
+  }
+  // 下划线、点、以及能穿出目录的写法都不该是目录名的一部分。
+  for (const id of ['dsh_mloader', 'dsh.mloader', '../../etc/passwd', 'a/b', 'a:b', 'a b']) {
+    assert.throws(() => parsePluginYml(withField('id', id), 'p.yml'), /must be lowercase letters, digits and hyphens/u)
+  }
+})
+
+test('parsePluginYml 要求 id 以字母开头', () => {
+  for (const id of ['1abc', '-abc']) {
+    assert.throws(() => parsePluginYml(withField('id', id), 'p.yml'), /starting with a letter/u)
+  }
+})
+
+test('parsePluginYml 限制 id 长度', () => {
+  assert.equal(parsePluginYml(withField('id', 'a'.repeat(214)), 'p.yml').id.length, 214)
+  assert.throws(() => parsePluginYml(withField('id', 'a'.repeat(215)), 'p.yml'), /id is 215 characters; use at most 214/u)
+})
+
+test('parsePluginYml 接受 npm 允许的 package 名', () => {
+  for (const name of ['dsh-mloader', 'dsh_hint', 'dsh.x', 'dsh~x', 'abc_', 'a'.repeat(214)]) {
+    assert.equal(parsePluginYml(withField('package', name), 'p.yml').package, name)
+  }
+})
+
+test('parsePluginYml 接受带引号的 scoped package 名', () => {
+  // 裸 @ 是 YAML 保留字符，所以要写成带引号的字符串。
+  assert.equal(parsePluginYml(withField('package', '"@myscope/dsh-plugin"'), 'p.yml').package, '@myscope/dsh-plugin')
+  assert.equal(parsePluginYml(withField('package', "'@myscope/dsh-plugin'"), 'p.yml').package, '@myscope/dsh-plugin')
+})
+
+test('parsePluginYml 拒绝 npm 不会接受的 package 名', () => {
+  for (const name of ['DSH-Mloader', '.abc', '_abc', 'a b', 'a/b/c', '"@scope/"']) {
+    assert.throws(() => parsePluginYml(withField('package', name), 'p.yml'), /is not a valid npm package name/u)
+  }
+})
+
+test('parsePluginYml 限制 package 长度', () => {
+  assert.throws(() => parsePluginYml(withField('package', 'a'.repeat(215)), 'p.yml'), /package is 215 characters; use at most 214/u)
+})
+
+test('parsePluginYml 拒绝三个已被别人发布到 npm 的 id', () => {
+  for (const id of ['dsh', 'dsh-plugin', 'dsh-plugins']) {
+    assert.throws(() => parsePluginYml(withField('id', id), 'p.yml'), /is reserved: another project publishes that name on npm/u)
+  }
+})
+
+test('parsePluginYml 只按整名保留，不误伤像它们的 id', () => {
+  for (const id of ['dsh-plugins-x', 'dsh-plugin-', 'dshh', 'ds']) {
+    assert.equal(parsePluginYml(withField('id', id), 'p.yml').id, id)
+  }
+})
+
+test('parsePluginYml 不因保留 id 而限制 package', () => {
+  // package 指向别处发布的包，能不能用由那个 registry 决定，不由这里的名单决定。
+  assert.equal(parsePluginYml(withField('package', 'dsh-plugin'), 'p.yml').package, 'dsh-plugin')
+})
