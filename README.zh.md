@@ -57,5 +57,8 @@ https://mynpm.staringplanet.top/dsh-plugins/index.json
 - [dsh-mloader](https://github.com/Mooling0602/dsh-mloader)（[中文](https://github.com/Mooling0602/dsh-mloader/blob/main/README.zh.md)）
   ![](https://img.shields.io/badge/version-v0.1.0-blue) ![](https://img.shields.io/badge/license-LGPL--3.0--only-blue) ![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)
 
+- [dsh-new-tab](https://github.com/Mooling0602/dsh-new-tab)（[中文](https://github.com/Mooling0602/dsh-new-tab/blob/main/README.md)）
+  ![](https://img.shields.io/badge/version-v0.1.0-blue) ![](https://img.shields.io/badge/ci-passing-brightgreen) ![](https://img.shields.io/badge/license-MIT-blue) ![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)
+
 - [dsh-web-file-uploader](https://github.com/Mooling0602/dsh-web-file-uploader)（[中文](https://github.com/Mooling0602/dsh-web-file-uploader/blob/main/README_zh_CN.md)）
   ![](https://img.shields.io/badge/pre--release-v1.0.0--rc.3-orange) ![](https://img.shields.io/badge/ci-passing-brightgreen) ![](https://img.shields.io/badge/license-MIT-blue) ![](https://awesome-dsh-plugin.com/badge.svg)
