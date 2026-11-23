@@ -363,22 +363,25 @@ export async function handle(request: Request, env: Env): Promise<Response> {
       return dependenciesOf(entry.packument as Resolved, version)
     }
     const version = requestedVersion(found.name, parts.slice(found.consumed))
-    if (!(await allowed(found.name, env.REGISTRY, upstream, hosts, own, [...hosted], version))) {
-      // A client that installs a hosted plugin does so with a registry flag that replaces the registry for its whole
-      // dependency tree, so a name outside the hosted graph is expected here. It is forwarded only for a client that has
-      // just used a hosted package. See GRANT_PREFIX.
-      const address = clientAddress(request, env.DEV_PROXY === '1')
-      const state = await grantOf(address)
-      if (state === 'granted') {
-        // Renewing while forwarding is what keeps a grant alive for the length of an install. The hosted request that
-        // opened the install is the only hosted request it makes, so without this the grant would be a hard limit from
-        // the first request rather than a budget that the install's own progress extends.
-        await remember(address)
-        return redirect(request, upstream)
-      }
-      return state === 'lapsed' ? lapsed(found.name) : denied(found.name)
+    // The grant is read before the walk. A client that is currently installing a hosted plugin sends every dependency it
+    // resolves through here, and the walk answers the same `true` for all of them at the cost of up to WALK_LIMIT KV
+    // reads and as many upstream requests. Answering the grant first means that path costs one cache read instead, and
+    // leaves the walk for the requests that can actually be refused, where its answer is the one that matters.
+    const address = clientAddress(request, env.DEV_PROXY === '1')
+    const state = await grantOf(address)
+    if (state === 'granted') {
+      // Renewing while forwarding is what keeps a grant alive for the length of an install. The hosted request that
+      // opened the install is the only hosted request it makes, so without this the grant would be a hard limit from
+      // the first request rather than a budget that the install's own progress extends.
+      await remember(address)
+      return redirect(request, upstream)
     }
-    return proxy(request, upstream)
+    if (await allowed(found.name, env.REGISTRY, upstream, hosts, own, [...hosted], version)) {
+      return proxy(request, upstream)
+    }
+    // Reaching here means this client may not be forwarded, so the answer differs only in why: a lapse is worth a retry
+    // and a name that was never reachable is not.
+    return state === 'lapsed' ? lapsed(found.name) : denied(found.name)
   }
   // A request for a hosted package is what earns the right to resolve the ones this worker does not host. Renewing it
   // here rather than only at install time is what keeps a client covered across the update checks that follow, each of
