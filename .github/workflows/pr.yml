@@ -40,14 +40,25 @@ run-name: "${{ github.event.issue.number && format('PR #{0}', github.event.issue
 # Every pull request runs, including drafts, because a draft has to be reported to its author so they can fix it before
 # marking it ready, and because a submission aimed at another branch still has to be seen in order to be refused.
 #
-# `/recheck` in a comment runs the same job again, on the same pull request, without the contributor needing to push or
-# close and reopen. It exists because a run is judged by the rules on `main`: when a rule changes, or when a run failed for
-# a reason outside the contribution, the pull request is otherwise stuck until something moves its branch.
+# A run is judged by the rules on `main`, so when a rule changes, or when a run failed for a reason outside the
+# contribution, the pull request is stuck until something moves its branch. There are two ways to ask for another run, and
+# they differ in one thing that matters:
 #
-# A comment is used rather than a label because labelling needs write access, which a contributor from a fork does not
-# have, and the people who most need a re-run are exactly the ones who cannot trigger one that way.
+# - A contributor comments exactly `/recheck`. This needs no write access, so anyone who can comment can use it,
+#   including the author of a fork's pull request. It runs the same checks and reports them in the same comment, but it
+#   cannot clear the required check that blocks merging: that check belongs to the run GitHub starts for the pull
+#   request's own head commit, and a comment run checks out `main` and so reports against `main`.
+# - A maintainer adds the `recheck` label. A `labeled` event under `pull_request_target` carries the pull request's head,
+#   so this run creates its `Check` on that head and does clear the required check. The label is removed again at the end
+#   of the run, which is what makes it usable more than once: adding a label a pull request already carries fires
+#   nothing.
+#
+# Both exist because neither alone is enough: the comment is the only one a contributor can use, and the label is the only
+# one that unblocks a fork's pull request, since a fork's branch does not exist in this repository and cannot be
+# dispatched.
 on:
   pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
   issue_comment:
     types: [created]
 
@@ -56,9 +67,14 @@ on:
 #
 # `pull-requests: read` is added for the `/recheck` path alone: a comment event says nothing about which pull request it
 # belongs to, so the first step reads that pull request back from the API before any check runs.
+#
+# `issues: write` is for one thing only — taking the `recheck` label back off at the end of the run. Pull requests are
+# issues as far as labels are concerned, so the label is removed through the issues endpoint and needs this permission
+# rather than `pull-requests: write`. Nothing else here writes anything.
 permissions:
   contents: read
   pull-requests: read
+  issues: write
 
 env:
   # The registry and index builds read each plugin repository's default branch and releases, so every step that talks to
@@ -72,17 +88,23 @@ jobs:
     # issue comments on ordinary issues too, and a comment on an issue has no pull request to judge. The comparison is an
     # exact whole-body match, because GitHub's expression syntax has no trim and no case folding to apply first: a comment
     # reading "please /recheck this" must not start a run, and neither must `/RECHECK`.
+    #
+    # A `labeled` event runs only for the `recheck` label, because every other label a maintainer adds — `plugins`, a
+    # category, a triage marker — says nothing about wanting the checks run again, and re-checking on each of them would
+    # spend three runs on one pull request.
     if: >-
-      github.event_name == 'pull_request_target' ||
+      (github.event_name == 'pull_request_target' &&
+      (github.event.action != 'labeled' || github.event.label.name == 'recheck')) ||
       (github.event.issue.pull_request != null && github.event.comment.body == '/recheck')
     runs-on: ubuntu-latest
     steps:
       # Which pull request is being judged, and where its head and base are.
       #
-      # A `pull_request_target` run carries that in the event, and the values are used as they arrive. A `/recheck` run
-      # carries only an issue number, so the same three facts are read back from the API instead, and everything below
-      # reads them from this step rather than from the event. That keeps one set of `${{ }}` references working for both
-      # triggers instead of duplicating every step.
+      # A `pull_request_target` run carries that in the event, and the values are used as they arrive; this covers the
+      # `opened` and `labeled` paths alike, because both are `pull_request_target`. A `/recheck` run carries only an issue
+      # number, so the same three facts are read back from the API instead, and everything below reads them from this step
+      # rather than from the event. That keeps one set of `${{ }}` references working for every trigger instead of
+      # duplicating every step.
       #
       # The head is re-read from the API rather than reused from any earlier value: a recheck is asked for precisely
       # because the pull request has moved on, so the freshest head is the only one worth judging.
@@ -228,3 +250,21 @@ jobs:
       # the whole worker without an account, so this needs no Cloudflare credential and cannot publish anything.
       - name: Verify the worker bundles
         run: pnpm exec wrangler deploy --dry-run --outdir "$RUNNER_TEMP/worker"
+
+      # The `recheck` label is a request, not a state, so it is taken back off once the run has answered it. Without this
+      # the label could only be used once: adding a label a pull request already carries fires no `labeled` event, so a
+      # second recheck would do nothing until someone removed it by hand.
+      #
+      # `always()` because a failing run answered the request just as much as a passing one, and leaving the label on after
+      # a failure would make the next attempt look like it had already been asked for. The step itself must never fail the
+      # job: the checks have already decided the result, and a label that could not be removed is not worth turning a
+      # passing run red over, so the failure is reported and swallowed.
+      - name: Take the recheck label back off
+        if: always() && github.event_name == 'pull_request_target' && github.event.action == 'labeled'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          gh api --method DELETE \
+            "repos/${{ github.repository }}/issues/$NUMBER/labels/recheck" \
+            || echo "The recheck label was already off, or could not be removed; the run is unaffected."

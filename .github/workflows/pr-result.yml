@@ -28,9 +28,10 @@ permissions:
 
 jobs:
   comment:
-    # Only the check workflow's reports are rendered. A run from a fork reports here too, and the pull request it belongs
-    # to is reachable from the run's own metadata. A `/recheck` run arrives the same way, carrying `issue_comment` as its
-    # event, and is reported on all the same: the person who asked for the run is waiting for its result.
+    # Only the check workflow's reports are rendered. Every trigger `pr.yml` accepts arrives here: a fork's pull request
+    # reports as `pull_request_target`, a contributor's `/recheck` as `issue_comment`, and a maintainer's `recheck` label
+    # as `pull_request_target` too, since a `labeled` event is one. The pull request a run belongs to is reachable from the
+    # run's own metadata in the first and last cases, and from the run's name in the second.
     if: >-
       github.event.workflow_run.event == 'pull_request_target' ||
       github.event.workflow_run.event == 'issue_comment'
