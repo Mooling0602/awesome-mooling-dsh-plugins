@@ -50,7 +50,7 @@ jobs:
       - uses: actions/create-github-app-token@v3
         id: bot
         with:
-          client-id: ${{ secrets.GH_BOT_APPID }}
+          client-id: ${{ secrets.GH_BOT_CLIENT_ID }}
           private-key: ${{ secrets.GH_BOT_PRIVATE_KEY }}
 
       - uses: actions/checkout@v7
