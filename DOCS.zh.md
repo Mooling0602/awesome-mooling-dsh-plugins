@@ -34,6 +34,17 @@ dispatch-type: npmjs  # 目前支持 npmjs|source|tarball
 
 这些信息将被用于生成临时插件列表 plugins.txt，然后通过 CloudFlare Workers 服务构建并缓存[索引数据](https://mynpm.staringplanet.top/dsh-plugins/index.json)，同时也会用于生成 [README](README.md) 及其翻译。
 
+### 命名规则
+
+`id` 和 `package` 会先于其他字段被检查，因为一个用不了的名字不是 CI 能延后处理的细节：
+
+- `id` 必须匹配 `^[a-z][a-z0-9-]*$`：小写字母、数字和连字符，且以**字母**开头。它会成为插件的目录名，所以必须是目录能承载的名字。不接受大写字母，是因为 macOS 和 Windows 对比文件名时不区分大小写，`dsh-Foo` 和 `dsh-foo` 会是同一个目录。
+- `id` 不能是 `dsh`、`dsh-plugin` 或 `dsh-plugins`。这几个名字在 npm 上由其他项目发布，插件若占用，会把读者引到别处。
+- `package` 必须是 npm 接受的名字，允许带 scope：`^(@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*$`。带 scope 的名字在 YAML 里必须加引号，因为裸 `@` 是保留值的起始符：`package: "@myscope/dsh-my-plugin"`。
+- 两者都限制在 214 个字符以内，这是 npm 自己的上限。
+
+被拒绝时，报错会指明字段、取值和规则，投稿不会在没说清违反了哪一条的情况下失败。
+
 ## 索引构建
 
 索引不是手工编写的，而是由 CI 从插件元数据和插件自身的发行信息（GitHub release、npmjs 源，或插件的 Git 历史）生成，再随 Workers 一起部署出去。整个流程由 `.github/workflows/registry.yml` 驱动，分两个有先后依赖的任务。
