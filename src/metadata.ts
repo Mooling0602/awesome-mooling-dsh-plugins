@@ -91,15 +91,37 @@ function parseReadme(node: unknown, at: string): Readme {
 }
 
 /**
- * Derive the shard directory for a plugin id.
- * @param id - the plugin identifier, for example `dsh-mloader`.
- * @returns `dsh-` plus the first two letters of the id without its `dsh-` prefix.
+ * The shard directory a plugin directory belongs in.
+ *
+ * A shard is the first two letters of the id after its `dsh-` prefix, and it is written the same way the plugin
+ * directory is: `dsh-mloader` lives in `dsh-ml` and `mloader` lives in `ml`. The two spellings never mix, so
+ * `ot/dsh-other` is rejected even though `ot` is the right two letters, because the plugin directory spells its prefix
+ * and the shard does not.
+ *
+ * Consistency is the point. Listing one shard directory must find every plugin whose id starts the same way, and a
+ * plugin must not be reachable under two spellings at once; both hold only while the shard and the plugin directory
+ * agree on whether the `dsh-` prefix is written out.
+ * @param id - the plugin directory name, for example `dsh-mloader` or `mloader`.
+ * @returns the one shard directory name that matches a plugin directory of that spelling.
  * @throws when the id has no two letters to build a shard from.
  */
 export function shardOf(id: string): string {
-  const short = id.startsWith('dsh-') ? id.slice('dsh-'.length) : id
+  const prefixed = id.startsWith('dsh-')
+  const short = prefixed ? id.slice('dsh-'.length) : id
   if (!/^[a-z0-9]{2}/u.test(short)) throw new Error(`cannot derive a shard from ${JSON.stringify(id)}`)
-  return `dsh-${short.slice(0, 2)}`
+  const name = short.slice(0, 2)
+  return prefixed ? `dsh-${name}` : name
+}
+
+/**
+ * Whether a shard directory name is the one a plugin directory belongs in.
+ * @param shard - the directory name holding the plugin directory.
+ * @param id - the plugin directory name.
+ * @returns true when the shard spells the `dsh-` prefix the same way the plugin directory does and holds its letters.
+ * @throws when the id has no two letters to build a shard from.
+ */
+export function inShard(shard: string, id: string): boolean {
+  return shardOf(id) === shard
 }
 
 /**
@@ -208,8 +230,9 @@ export function checkPluginLocation(
   file: string,
 ): Plugin {
   if (plugin.id !== directory) throw new Error(`${file}: id ${JSON.stringify(plugin.id)} must match its directory ${JSON.stringify(directory)}`)
-  const expected = shardOf(plugin.id)
-  if (shard !== expected) throw new Error(`${file}: ${JSON.stringify(plugin.id)} belongs in ${JSON.stringify(expected)}, not ${JSON.stringify(shard)}`)
+  if (!inShard(shard, plugin.id)) {
+    throw new Error(`${file}: ${JSON.stringify(plugin.id)} belongs in ${JSON.stringify(shardOf(plugin.id))}, not ${JSON.stringify(shard)}`)
+  }
   return { ...plugin, shard, file }
 }
 

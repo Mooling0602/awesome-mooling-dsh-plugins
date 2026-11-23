@@ -140,10 +140,13 @@ CI 环境下不需要这套机制，工作流会通过 `SKIP_README_WORKTREE=1` 
 
 欢迎你为本仓库提交 PR！在创建 fork 并打开 PR 之前，你需要遵循以下规范：
 
-- 对于投递你所推荐的插件：使用 `feat: add or update plugin <dsh-plugin-id>` 例如 `feat: add or update plugin dsh-my-plugin` 作为提交信息和 PR 标题（PR 标题没有严格限制，提交信息会由 CI 检查并忽略正文内容，若不符规范且未处于 draft 状态，将被直接关闭）。对于 CI 通过的 PR，在 24 小时无人处理后，会推送 AI 审核并自动拒绝或合并。
-
-> CI 实现将在后续 push 到仓库内，在此之前，一律走人工审查。
-
+- 对于投递你所推荐的插件：PR **必须指向 `main` 分支**，且只包含一个插件元数据文件 `plugins/by-name/<分片>/<插件 id>/plugin.yml`。指向其他分支，或在同一个 PR 里既投递插件又改动仓库本身，都会被直接关闭，draft 状态也不例外。
+- `<分片>` 是该插件 id 去掉 `dsh-` 前缀后的前两个字母，写不写 `dsh-` 前缀都可以，但必须和插件目录名保持一致：`dsh-mloader` 放在 `dsh-ml/` 或 `ml/` 下都行，但不能是 `dsh-mloader` 放在 `ml/` 下。
+- 提交信息（PR 标题没有严格限制）使用 `feat: add or update plugin <dsh-plugin-id>`，例如 `feat: add or update plugin dsh-my-plugin`。CI 会检查提交信息和上述文件结构，忽略正文内容。对于 CI 通过的 PR，在 24 小时无人处理后，会推送 AI 审核并自动拒绝或合并。
 - 对于修改本仓库内的维护规范和部署系统，使用[约定式提交](https://www.conventionalcommits.org/zh-hans/v1.0.0/)，并在 PR 正文内用你所使用的语言说明清楚你的意图、修改内容和理由。这类提交直接由维护者本人亲自审查，并决定是否通过。
+
+> 建议创建 PR 时先打开为 draft，避免 CI 失败被直接拒绝。CI 通过后再转成 ready。CI 通过后，PR 上会出现一条评论，用表格列出每一项检查的结果。
+
+> PR 一旦被关闭，本仓库不会再追加任何评论——关闭本身就是完整的答复。
 
 如不能认同或遵守以上规范，请不要投递 PR！

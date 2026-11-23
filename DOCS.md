@@ -140,10 +140,13 @@ CI does not need any of this, so the workflow sets `SKIP_README_WORKTREE=1` to k
 
 PRs to this repository are welcome! Before creating a fork and opening a PR, you need to follow these conventions:
 
-- To submit a plugin you recommend: use `feat: add or update plugin <dsh-plugin-id>`, for example `feat: add or update plugin dsh-my-plugin`, as the commit message and PR title (the PR title is not strictly constrained; the commit message is checked by CI and its body is ignored, and a non-conforming commit will be closed directly unless the PR is a draft). For a PR that passes CI, after 24 hours with no maintainer action, AI review is dispatched to reject or merge it automatically.
-
-> The CI implementation will be pushed to the repository later; until then, everything goes through manual review.
-
+- To submit a plugin you recommend: the pull request **must target `main`** and must contain exactly one plugin metadata file, `plugins/by-name/<shard>/<plugin id>/plugin.yml`. A pull request aimed at any other branch, or one that both submits a plugin and changes the repository itself, is closed directly — a draft included.
+- `<shard>` is the first two letters of the plugin id after its `dsh-` prefix. The shard may be written with or without that prefix, but it must agree with the plugin directory: `dsh-mloader` belongs in `dsh-ml/` or `ml/`, never `ml/` holding `dsh-mloader`.
+- Use `feat: add or update plugin <dsh-plugin-id>`, for example `feat: add or update plugin dsh-my-plugin`, as the commit message (the PR title is not strictly constrained). CI checks the commit message and the file structure above, and ignores the body. For a PR that passes CI, after 24 hours with no maintainer action, AI review is dispatched to reject or merge it automatically.
 - To change the maintenance conventions or the deployment system in this repository: use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/), and explain your intent, your changes and your reasoning in the PR body in the language you use. Such changes are reviewed by the maintainer personally, who decides whether to accept them.
+
+> Open the pull request as a draft first, so a failing CI run is not taken as a rejection. Mark it ready once the checks pass. When CI passes, the pull request gets one comment listing every check result as a table.
+
+> Once a pull request is closed, this repository adds no further comment to it: the closure is the whole answer.
 
 If you cannot agree with or follow the conventions above, please do not open a PR!

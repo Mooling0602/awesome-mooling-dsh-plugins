@@ -1,0 +1,80 @@
+name: PR
+
+# Checks a pull request without publishing anything.
+#
+# `registry.yml` deploys the worker and writes KV on every push to main, so it is deliberately not triggered here: a pull
+# request must be able to run the whole check suite without touching the deployed registry. This workflow runs the same
+# checks up to the point of deployment and stops at a dry-run bundle, which is what catches a worker that would fail to
+# build without spending a deploy on it.
+#
+# Nothing is committed and nothing is uploaded to KV. The build tree under `dists/` is produced and discarded, because
+# both the registry data and the index are derived from the plugin metadata and from GitHub, not from files a branch
+# carries.
+#
+# Every pull request runs, not just those targeting `main`, because a submission aimed at another branch still has to be
+# seen in order to be rejected: `src/contrib/check.ts` checks the base branch, and a workflow that never ran could not
+# report that a submission has no business targeting anything but `main`.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  # The registry and index builds read each plugin repository's default branch and releases, so every step that talks to
+  # GitHub needs this to stay inside the unauthenticated rate limit, which a shared CI address exhausts quickly.
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Runs before anything is built, so a pull request that cannot be accepted fails in seconds instead of after a
+      # full registry and index build. It needs the merge base, which the default shallow checkout does not carry.
+      #
+      # `--base` is passed because a plugin submission may only target `main`; the check rejects one aimed elsewhere
+      # rather than letting it through to a merge that could never publish.
+      - name: Check the commit subject and the submitted metadata
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          node src/contrib/check.ts --range "origin/${{ github.base_ref }}...HEAD" --base "${{ github.base_ref }}"
+
+      # The registry data is built first because the index is read from these packuments and the worker imports the
+      # index, so `pnpm check` cannot type-check the worker until both exist. This is the same order `registry.yml` uses
+      # for the same reason.
+      - name: Build registry data
+        run: pnpm registry
+
+      - name: Build index
+        run: ./build-index.sh
+
+      # The generated READMEs are committed files, so a branch that edited a plugin's metadata without regenerating them
+      # would land a repository whose README contradicts its own plugin list. `registry.yml` never checks this, because
+      # `readme.yml` fixes it after the fact, but a pull request should be rejected rather than silently corrected.
+      - name: Check the READMEs are up to date
+        run: node src/readme/build.ts --check
+
+      - name: Typecheck
+        run: pnpm check
+      - name: Test
+        run: pnpm test
+
+      # A bundle that cannot be produced is a worker that cannot deploy. `wrangler deploy --dry-run` builds and validates
+      # the whole worker without an account, so this needs no Cloudflare credential and cannot publish anything.
+      - name: Verify the worker bundles
+        run: pnpm exec wrangler deploy --dry-run --outdir "$RUNNER_TEMP/worker"

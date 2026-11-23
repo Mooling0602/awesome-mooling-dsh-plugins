@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { FIELDS, checkPluginLocation, parsePluginYml, shardOf } from './metadata.ts'
+import { FIELDS, checkPluginLocation, inShard, parsePluginYml, shardOf } from './metadata.ts'
 
 const GOOD = [
   'id: dsh-mloader',
@@ -25,6 +25,33 @@ test('shardOf 拒绝没有两个字母的 id', () => {
   assert.throws(() => shardOf('dsh-a'), /cannot derive a shard/u)
   assert.throws(() => shardOf('dsh-'), /cannot derive a shard/u)
   assert.throws(() => shardOf('dsh-1'), /cannot derive a shard/u)
+})
+
+test('shardOf 保留插件目录是否写 dsh- 前缀', () => {
+  assert.equal(shardOf('dsh-other'), 'dsh-ot')
+  assert.equal(shardOf('other'), 'ot')
+  assert.equal(shardOf('dshother'), 'ds')
+})
+
+test('shardOf 让 shard 与插件目录的前缀写法一致', () => {
+  for (const [shard, id] of [
+    ['ot', 'other'],
+    ['dsh-ot', 'dsh-other'],
+    ['ds', 'dshother'],
+    ['dsh-ds', 'dsh-dshother'],
+  ] as const) {
+    assert.equal(shardOf(id), shard, id)
+  }
+})
+
+test('inShard 拒绝前缀写法不一致的目录', () => {
+  assert.equal(inShard('ot', 'other'), true)
+  assert.equal(inShard('dsh-ot', 'dsh-other'), true)
+  // 字母对了，但插件目录写了前缀而 shard 没写，反之亦然。
+  assert.equal(inShard('ot', 'dsh-other'), false)
+  assert.equal(inShard('dsh-ot', 'other'), false)
+  assert.equal(inShard('ds', 'dsh-other'), false)
+  assert.equal(inShard('dsh-hi', 'other'), false)
 })
 
 test('parsePluginYml 接受五字段文件', () => {
