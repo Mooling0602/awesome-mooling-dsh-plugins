@@ -23,8 +23,8 @@ permissions:
 
 jobs:
   comment:
-    # A run from a fork's `pull_request` event still reports here, and the pull request it belongs to is reachable from
-    # the run's own metadata.
+    # Only the check workflow's reports are rendered. A run from a fork reports here too, and the pull request it belongs
+    # to is reachable from the run's own metadata.
     if: github.event.workflow_run.event == 'pull_request_target'
     runs-on: ubuntu-latest
     steps:
