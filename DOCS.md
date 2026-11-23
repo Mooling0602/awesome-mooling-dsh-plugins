@@ -160,6 +160,8 @@ PRs to this repository are welcome! Before creating a fork and opening a PR, you
 
 > Open the pull request as a draft first, so a failing CI run is not taken as a rejection. Mark it ready once the checks pass. When CI passes, the pull request gets one comment listing every check result as a table.
 
+> Comment exactly `/recheck` on your pull request to run the checks again, on the current head, against whatever `main` says today. Nothing else is needed: no push, no label, no reopening. The comment must be exactly `/recheck` — a sentence mentioning it does not count — and it works for anyone who can comment, including a contributor whose pull request comes from a fork.
+
 > Once a pull request is closed, this repository adds no further comment to it: the closure is the whole answer.
 
 If you cannot agree with or follow the conventions above, please do not open a PR!
