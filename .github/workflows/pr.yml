@@ -65,16 +65,13 @@ on:
 # `contents: read` is all the checks need. The comment on a run is posted by `pr-result.yml`, which is a separate
 # workflow listening on `workflow_run`, so nothing here writes to the repository.
 #
-# `pull-requests: read` is added for the `/recheck` path alone: a comment event says nothing about which pull request it
-# belongs to, so the first step reads that pull request back from the API before any check runs.
-#
-# `issues: write` is for one thing only — taking the `recheck` label back off at the end of the run. Pull requests are
-# issues as far as labels are concerned, so the label is removed through the issues endpoint and needs this permission
-# rather than `pull-requests: write`. Nothing else here writes anything.
+# `pull-requests: write` is for two things: reading the pull request a `/recheck` comment belongs to, and taking the
+# `recheck` label back off at the end of the run. Labels are served by the issues endpoints, but for a pull request GitHub
+# accepts `pull-requests: write` there and *not* `issues: write` — measured: with `issues: write` granted, the same DELETE
+# answered 403 `Resource not accessible by integration` while the run log listed `Issues: write`.
 permissions:
   contents: read
-  pull-requests: read
-  issues: write
+  pull-requests: write
 
 env:
   # The registry and index builds read each plugin repository's default branch and releases, so every step that talks to
@@ -256,15 +253,21 @@ jobs:
       # second recheck would do nothing until someone removed it by hand.
       #
       # `always()` because a failing run answered the request just as much as a passing one, and leaving the label on after
-      # a failure would make the next attempt look like it had already been asked for. The step itself must never fail the
-      # job: the checks have already decided the result, and a label that could not be removed is not worth turning a
-      # passing run red over, so the failure is reported and swallowed.
+      # a failure would make the next attempt look like it had already been asked for.
+      #
+      # A 404 is the one answer that is not a problem: it means the label is already off, which is the state this step
+      # exists to reach. Anything else is reported as a warning and swallowed, because the checks have already decided the
+      # result and a label that would not come off is not worth turning a passing run red over — but it is *said*, rather
+      # than hidden behind a successful exit, so the failure is visible if it ever happens.
       - name: Take the recheck label back off
         if: always() && github.event_name == 'pull_request_target' && github.event.action == 'labeled'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NUMBER: ${{ steps.pr.outputs.number }}
         run: |
-          gh api --method DELETE \
-            "repos/${{ github.repository }}/issues/$NUMBER/labels/recheck" \
-            || echo "The recheck label was already off, or could not be removed; the run is unaffected."
+          if gh api --method DELETE "repos/${{ github.repository }}/issues/$NUMBER/labels/recheck"; then
+            echo "The recheck label is off again."
+            exit 0
+          fi
+          status=$(gh api "repos/${{ github.repository }}/issues/$NUMBER/labels" --jq '[.[].name] | join(",")')
+          echo "::warning::Could not remove the recheck label; the labels now read: $status"
