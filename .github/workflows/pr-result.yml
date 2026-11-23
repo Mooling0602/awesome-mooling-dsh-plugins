@@ -27,14 +27,146 @@ permissions:
   pull-requests: write
 
 jobs:
-  comment:
+  # Which pull request this run belongs to, worked out before anything is written.
+  #
+  # This is a job of its own because of the concurrency group on the job below: a `workflow_run` event carries the run's
+  # own metadata and no `pull_request` object, so the number has to be resolved by asking GitHub, and a group can only be
+  # named from data that already exists when the job is queued. A workflow-level `concurrency` cannot see an earlier
+  # job's result — its allowed contexts stop at `github`, `inputs` and `vars` — while a job-level one can read `needs`,
+  # which is exactly the difference this split uses.
+  #
+  # Nothing is written here, so it is safe for this job to run for every completed run, several at a time, on any
+  # number of pull requests.
+  resolve:
     # Only the check workflow's reports are rendered. Every trigger `pr.yml` accepts arrives here: a fork's pull request
     # reports as `pull_request_target`, a contributor's `/recheck` as `issue_comment`, and a maintainer's `recheck` label
-    # as `pull_request_target` too, since a `labeled` event is one. The pull request a run belongs to is reachable from the
-    # run's own metadata in the first and last cases, and from the run's name in the second.
+    # as `pull_request_target` too, since a `labeled` event is one.
     if: >-
       github.event.workflow_run.event == 'pull_request_target' ||
       github.event.workflow_run.event == 'issue_comment'
+    runs-on: ubuntu-latest
+    outputs:
+      number: ${{ steps.pr.outputs.number }}
+      judged: ${{ steps.pr.outputs.judged }}
+      recorded: ${{ steps.pr.outputs.recorded }}
+    steps:
+      # The judgement the check run recorded, downloaded before anything is guessed. The check workflow writes it as its
+      # last act, so it exists even for a run that failed — which is the report that matters most.
+      #
+      # Read from the run rather than reconstructed from this event, because this event cannot supply it. Under
+      # `pull_request_target` from a fork the run reports no `pull_requests` entry at all, and under `issue_comment` the
+      # run's `head_sha` is the tip of the default branch rather than the commit it went on to judge. The file names both
+      # the pull request that run read and the commit it judged, and nothing else here can.
+      #
+      # `continue-on-error` because a run that stopped before writing the file — cancelled during setup — has nothing to
+      # report anyway; the script below then falls back to the event, and the step that posts declines to write.
+      #
+      # The artifact is named for the attempt. Artifacts belong to the run, not to the attempt, so a re-run leaves the
+      # earlier attempt's copy in place beside its own; asking for the bare name would pick up whichever uploaded last
+      # and describe the wrong attempt's judgement — or, when the attempt being reported stopped before uploading, would
+      # find the other attempt's file and attribute it to this one.
+      - name: Read what was judged
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: judged-${{ github.event.workflow_run.run_attempt }}
+          path: ${{ runner.temp }}/judged
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Read the pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          number=''
+          judged=''
+          recorded=false
+          # The recorded judgement wins over everything below, because it is the only record that is not a guess: the
+          # run wrote down the pull request it read and the commit it judged. Resolving first and comparing afterwards
+          # threw good verdicts away — the run had judged #5, the guess said #7, and the report then declined to speak
+          # about either. Read first, and the report knows which pull request and which group it belongs to.
+          if [ -s "$RUNNER_TEMP/judged/judged.json" ]; then
+            number=$(jq -r '.number // empty' "$RUNNER_TEMP/judged/judged.json")
+            judged=$(jq -r '.head // empty' "$RUNNER_TEMP/judged/judged.json")
+            if [ -z "$number" ] || [ -z "$judged" ]; then
+              # A file that does not name both is not a judgement this workflow can act on. Fall back to the guesses
+              # below, and let the posting step decline if they produce a number this run never wrote down.
+              number=''
+              judged=''
+            else
+              recorded=true
+            fi
+          fi
+          if [ -z "$number" ]; then
+            number=$(jq -r '.workflow_run.pull_requests[0].number // empty' "$GITHUB_EVENT_PATH")
+          fi
+          # A `/recheck` run is identified by the name the check job gave it, before anything else is tried. Its
+          # `head_sha` is the tip of `main` rather than the pull request's head, because that is what the comment event
+          # checked out, so the commit lookup below would match whatever pull request happens to point at `main` instead
+          # of the one the comment asked about. Reading the name before the commit is what keeps this from reporting on
+          # the wrong pull request, which is worse than reporting on none.
+          if [ -z "$number" ] && [ "$(jq -r '.workflow_run.event' "$GITHUB_EVENT_PATH")" = "issue_comment" ]; then
+            number=$(jq -r '.workflow_run.display_title // empty | capture("^PR #(?<n>[0-9]+)$").n' "$GITHUB_EVENT_PATH" 2>/dev/null || true)
+          fi
+          if [ -z "$number" ]; then
+            # A run started from a fork reports no pull request on the run itself, which is the usual case for the
+            # contributions this repository accepts. The head commit identifies it instead: the open pull request whose
+            # head is exactly that commit is the one this run checked.
+            #
+            # The head has to be compared, not merely listed. A commit reaches this endpoint as part of every pull
+            # request that contains it, so a commit already merged into a branch that three open pull requests are built
+            # on is reported under all three, and taking the first would comment on a pull request the run never looked
+            # at. `select(.head.sha == env.SHA)` is what makes the match the run's own head rather than any open pull
+            # request that happens to contain it.
+            sha=$(jq -r '.workflow_run.head_sha' "$GITHUB_EVENT_PATH")
+            number=$(SHA="$sha" gh api "repos/$REPOSITORY/commits/$sha/pulls" --jq '[.[] | select(.state == "open") | select(.head.sha == env.SHA)][0].number // empty' 2>/dev/null || true)
+          fi
+          if [ -z "$number" ]; then
+            echo "No open pull request for this run; nothing to report."
+            exit 0
+          fi
+          # A comment on an ordinary issue carries that issue's number in the run name, and the check job is skipped for
+          # it because there is no pull request to judge. Issues and pull requests share one number space, so a pull
+          # request with the same number usually does exist and would otherwise receive this comment about a run that
+          # never checked it. Asking for the number as a pull request is what distinguishes the two: the request 404s for
+          # an issue, and a 404 here means there is nothing to report.
+          if ! gh api "repos/$REPOSITORY/pulls/$number" > /dev/null 2>&1; then
+            echo "#$number is not a pull request; nothing to report."
+            exit 0
+          fi
+          {
+            echo "number=$number"
+            echo "judged=$judged"
+            echo "recorded=$recorded"
+          } >> "$GITHUB_OUTPUT"
+
+  # The comment itself, one reporting run at a time per pull request. Two reports editing the same comment at once can
+  # race: both read the comment list before either has posted, both find nothing, and each then creates one — and from
+  # that point `--edit-last` only maintains the newer of the two, leaving the other behind showing a verdict that has
+  # been replaced.
+  #
+  # The group is the pull request, not the branch it was resolved from. Keying on a branch would put two pull requests
+  # opened from the same branch name — the ordinary case for forks, where every contributor has their own `main` — into
+  # one group, and a report for one of them would then wait behind, or replace the pending report of, a pull request it
+  # has nothing to do with.
+  #
+  # Queueing rather than cancelling: a cancelled report takes its verdict with it, and the second run has real work to
+  # do, namely reporting the newer run's conclusions. `queue: max` is what makes that true for more than one waiter.
+  # Without it a group holds a single pending run and the next one to arrive replaces it, so three quick runs would
+  # report the first and the third and silently drop the second. Each report is cheap — it reads one run and edits one
+  # comment — so letting up to a hundred wait costs nothing, and every verdict that has not been superseded gets written.
+  # `queue: max` cannot be combined with `cancel-in-progress: true`; the pair would be a validation error, and cancelling
+  # is wrong here anyway.
+  comment:
+    needs: resolve
+    if: needs.resolve.outputs.number != ''
+    concurrency:
+      group: pr-result-${{ needs.resolve.outputs.number }}
+      cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -50,48 +182,18 @@ jobs:
       # The endpoint answers with `{ total_count, jobs: [...] }`, and only the array is wanted. `--jq` unwraps it here so
       # the renderer receives the list it expects; writing the whole response would give it an object, and reading a run
       # that had not yet produced a job would fail on the first step of the report rather than reporting nothing.
+      #
+      # The attempt is named explicitly. A re-run does not replace the earlier attempt's jobs, the plain runs endpoint
+      # answers with the latest attempt's, and this report describes one attempt: reading the newest jobs while rendering
+      # the conclusion the event carries for an older attempt would put one attempt's failures under another attempt's
+      # verdict. `github.event.workflow_run.run_attempt` is the attempt the event is about, and the attempt-scoped
+      # endpoint is the only one that answers for it.
       - name: Read the run's steps
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUN_ID: ${{ github.event.workflow_run.id }}
-        run: gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID/jobs" --jq '.jobs' > "$RUNNER_TEMP/jobs.json"
-
-      - name: Read the pull request
-        id: pr
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          number=$(jq -r '.workflow_run.pull_requests[0].number // empty' "$GITHUB_EVENT_PATH")
-          # A `/recheck` run is identified by the name the check job gave it, before anything else is tried. Its
-          # `head_sha` is the tip of `main` rather than the pull request's head, because that is what the comment event
-          # checked out, so the commit lookup below would match whatever pull request happens to point at `main` instead
-          # of the one the comment asked about. Reading the name first is what keeps this from reporting on the wrong
-          # pull request, which is worse than reporting on none.
-          if [ -z "$number" ] && [ "$(jq -r '.workflow_run.event' "$GITHUB_EVENT_PATH")" = "issue_comment" ]; then
-            number=$(jq -r '.workflow_run.display_title // empty | capture("^PR #(?<n>[0-9]+)$").n' "$GITHUB_EVENT_PATH" 2>/dev/null || true)
-          fi
-          if [ -z "$number" ]; then
-            # A run started from a fork reports no pull request on the run itself, which is the usual case for the
-            # contributions this repository accepts. The head commit identifies it instead: the open pull request whose
-            # head is exactly that commit is the one this run checked.
-            sha=$(jq -r '.workflow_run.head_sha' "$GITHUB_EVENT_PATH")
-            number=$(gh api "repos/$REPOSITORY/commits/$sha/pulls" --jq '[.[] | select(.state == "open")][0].number // empty' 2>/dev/null || true)
-          fi
-          if [ -z "$number" ]; then
-            echo "No open pull request for this run; nothing to report."
-            exit 0
-          fi
-          # A comment on an ordinary issue carries that issue's number in the run name, and the check job is skipped for
-          # it because there is no pull request to judge. Issues and pull requests share one number space, so a pull
-          # request with the same number usually does exist and would otherwise receive this comment about a run that
-          # never checked it. Asking for the number as a pull request is what distinguishes the two: the request 404s for
-          # an issue, and a 404 here means there is nothing to report.
-          if ! gh api "repos/$REPOSITORY/pulls/$number" > /dev/null 2>&1; then
-            echo "#$number is not a pull request; nothing to report."
-            exit 0
-          fi
-          echo "number=$number" >> "$GITHUB_OUTPUT"
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" --jq '.jobs' > "$RUNNER_TEMP/jobs.json"
 
       # Nothing here closes a pull request, including one that targets another branch. Whether a submission may be merged
       # is enforced by the repository's required status checks, which a failing run leaves unmet, and closing is a decision
@@ -100,7 +202,6 @@ jobs:
 
       - name: Render the comment
         id: body
-        if: steps.pr.outputs.number != ''
         env:
           CONCLUSION: ${{ github.event.workflow_run.conclusion }}
         run: |
@@ -120,21 +221,43 @@ jobs:
       # pile up notifications. `--edit-last` edits this account's most recent comment, which is this one because it is the
       # only comment this token posts.
       #
-      # A closed pull request is skipped, and the state is read again here rather than reused from the earlier step: the
-      # maintainer may have closed it in the meantime, and a stale answer would post a comment on something that is
-      # already over.
+      # Two things are checked immediately before writing, and both are re-read here rather than reused from an earlier
+      # step, because the answer can change while this workflow waits its turn in the concurrency group.
+      #
+      # The first is that the pull request is still open: the maintainer may have closed it in the meantime, and a stale
+      # answer would post a comment on something that is already over.
+      #
+      # The second is that the commit this run judged is still the head of the pull request. `--edit-last` replaces
+      # whichever comment is newest, so a run of an older commit finishing last would overwrite a newer verdict with an
+      # older one — the failing check being reported as passing, or the reverse. The commit comes from the run's own
+      # record of what it judged, which the check workflow writes before it finishes: this event carries it only under
+      # `pull_request_target`, and a `/recheck` run's `head_sha` is the tip of the default branch it checked out rather
+      # than the head it read back and judged. A run that recorded nothing has no verdict to attribute, so it says
+      # nothing rather than guessing.
       - name: Post the comment
         if: steps.body.outputs.post == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ steps.pr.outputs.number }}
+          PR: ${{ needs.resolve.outputs.number }}
+          REPOSITORY: ${{ github.repository }}
+          JUDGED: ${{ needs.resolve.outputs.judged }}
+          RECORDED: ${{ needs.resolve.outputs.recorded }}
         run: |
-          state=$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq .state)
+          state=$(gh api "repos/$REPOSITORY/pulls/$PR" --jq .state)
           if [ "$state" != "open" ]; then
             echo "The pull request is $state; a closed pull request gets no message."
             exit 0
           fi
+          if [ "$RECORDED" != "true" ]; then
+            echo "This run recorded no judgement, so there is nothing to attribute; a newer run reports instead."
+            exit 0
+          fi
+          head=$(gh api "repos/$REPOSITORY/pulls/$PR" --jq .head.sha)
+          if [ "$JUDGED" != "$head" ]; then
+            echo "This run judged $JUDGED, but the pull request has moved on to $head; a newer run reports instead."
+            exit 0
+          fi
           gh pr comment "$PR" \
-            --repo "${{ github.repository }}" \
+            --repo "$REPOSITORY" \
             --body-file "$RUNNER_TEMP/comment.md" \
             --edit-last --create-if-none

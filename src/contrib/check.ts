@@ -48,6 +48,10 @@ export interface Changed {
  * submission's pull request title, where {@link checkTitle} judges it and the plugin id is available to compare against.
  * What remains is what holds for every commit in this repository, whether it submits a plugin or changes the registry
  * itself.
+ *
+ * The argument is a subject by construction — {@link subjectsOf} asks git for `--format=%s`, which is the first line — so
+ * there is no test here for a subject that spans lines. There used to be one, and it could not fail: git never produces
+ * such a subject, so the branch was unreachable and its test only ever exercised the function directly.
  * @param subject - the first line of a commit message.
  * @returns the problems found, empty when the subject is usable.
  */
@@ -55,7 +59,6 @@ export function checkSubject(subject: string): string[] {
   const problems: string[] = []
   if (subject.trim() === '') return ['the commit subject is empty']
   if (subject !== subject.trim()) problems.push(`the commit subject has leading or trailing whitespace: ${JSON.stringify(subject)}`)
-  if (subject.includes('\n')) problems.push('the commit subject spans more than one line')
   if (subject.trim().length > SUBJECT_LIMIT) {
     problems.push(`the commit subject is ${subject.trim().length} characters; keep it under ${SUBJECT_LIMIT}`)
   }
@@ -84,7 +87,11 @@ export function checkDiff(changed: readonly Changed[]): string[] {
   if (changed.length > 1) {
     return [
       `a plugin submission changes exactly one metadata file, but this pull request touches ${changed.length}:`,
-      ...changed.map(file => `  ${file.status} ${file.path}`),
+      // The path is quoted rather than printed as it stands. A git path may hold a newline or an escape sequence, and
+      // git will print both back verbatim when asked without quoting; a contributor could then write a file name that
+      // rewrites the lines around it in the log, or that hides which file the complaint is about. Quoting turns every
+      // such character into its escape, so the log shows one line per file whatever the name contains.
+      ...changed.map(file => `  ${file.status} ${JSON.stringify(file.path)}`),
       'Add the plugin in its own pull request, without changing the repository in the same one.',
     ]
   }
@@ -186,16 +193,23 @@ export function branchPoint(base: string, head: string): string {
  * @throws when git cannot be run, which is a broken checkout rather than a rejected pull request.
  */
 export function changedFiles(base: string, head: string): Changed[] {
-  const output = execFileSync('git', ['diff', '--name-status', '--no-renames', branchPoint(base, head), head], {
+  // `-z` because git otherwise escapes any path outside plain ASCII, wraps it in quotes, and separates status from path
+  // by a tab — none of which survives a path that contains a quote, a backslash or a tab itself. Measured: a file at
+  // `plugins/by-name/中文/plugin.yml` came back as `"plugins/by-name/\344\270\255\346\226\207/plugin.yml"`, which no longer
+  // matches the metadata path pattern, so a submission under a non-ASCII directory was told it sat at the wrong path —
+  // pointing its author at the one thing that was right about it. Under `-z` the output is `STATUS\0PATH\0`, verbatim.
+  const output = execFileSync('git', ['diff', '--name-status', '-z', '--no-renames', branchPoint(base, head), head], {
     encoding: 'utf8',
   })
-  return output
-    .split('\n')
-    .filter(line => line !== '')
-    .map((line) => {
-      const [status = '', path = ''] = line.split('\t')
-      return { status: status.slice(0, 1), path }
-    })
+  const fields = output.split('\0')
+  const changed: Changed[] = []
+  for (let index = 0; index + 1 < fields.length; index += 2) {
+    const status = fields[index] ?? ''
+    const path = fields[index + 1] ?? ''
+    if (status === '') continue
+    changed.push({ status: status.slice(0, 1), path })
+  }
+  return changed
 }
 
 /**
@@ -304,9 +318,16 @@ export function warnSubjects(subjects: readonly string[]): string[] {
 
 /**
  * Read the plugin id a metadata file declares, without validating the rest of it.
+ *
+ * The file is parsed rather than pattern-matched, because YAML lets the same id be written several ways and a regex
+ * understands only one of them. Measured against `id: dsh-new-tab`, `id: "dsh-new-tab"`, `id: 'dsh-new-tab'`,
+ * `id: dsh-new-tab # the tab page` and an indented `id:`, a `/^id:\s*(\S+)\s*$/m` match found the right value in one case
+ * out of five: it kept the quotes in the quoted forms, which then failed the title check for a submission that was
+ * correct, and it found nothing at all in the last two, which skipped the title check entirely. Both failures are silent,
+ * and the second one lets any title through.
  * @param path - repository-relative path of the metadata file.
  * @param head - the commit to read it from.
- * @returns the id, or `null` when the file cannot be read or declares none.
+ * @returns the id, or `null` when the file cannot be read or parsed.
  */
 function submittedId(path: string, head: string): string | null {
   let text: string
@@ -315,8 +336,13 @@ function submittedId(path: string, head: string): string | null {
   } catch {
     return null
   }
-  const match = /^id:\s*(\S+)\s*$/m.exec(text)
-  return match?.[1] ?? null
+  // A parse failure is not this function's to report: `checkMetadata` has already explained what is wrong with the file,
+  // and the caller reads the title only when that came back clean.
+  try {
+    return parsePluginYml(text, path).id
+  } catch {
+    return null
+  }
 }
 
 /**

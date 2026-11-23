@@ -75,9 +75,9 @@ test('checkSubject rejects a subject over 100 characters', () => {
   assert.ok(checkSubject('a'.repeat(120)).some(problem => problem.includes('characters; keep it under 100')))
 })
 
-test('checkSubject rejects a subject spanning more than one line', () => {
-  assert.ok(checkSubject('add a plugin\nand more').some(problem => problem.includes('spans more than one line')))
-})
+// A subject spanning more than one line is not tested because it cannot reach this function: `subjectsOf` asks git for
+// `--format=%s`, which is the first line by definition. The check for it was removed rather than kept, since an
+// unreachable branch covered by a direct call looks tested while the real input can never exercise it.
 
 test('isSubmission is decided by the file name alone', () => {
   assert.equal(isSubmission(GOOD), true)
@@ -111,8 +111,20 @@ test('checkDiff rejects a second file', () => {
 
 test('checkDiff names every file it rejected', () => {
   const problems = checkDiff([...GOOD, { status: 'M', path: 'src/metadata.ts' }])
-  assert.ok(problems.some(problem => problem.includes('A plugins/by-name/dsh-hi/dsh-hint-shell/plugin.yml')))
-  assert.ok(problems.some(problem => problem.includes('M src/metadata.ts')))
+  assert.ok(problems.some(problem => problem.includes('A "plugins/by-name/dsh-hi/dsh-hint-shell/plugin.yml"')))
+  assert.ok(problems.some(problem => problem.includes('M "src/metadata.ts"')))
+})
+
+test('checkDiff keeps a file name from rewriting the lines around it', () => {
+  // A git path can hold a newline, and the diagnostic is printed to a log a maintainer reads. Printed as it stands the
+  // name would end the line early and push whatever it holds onto lines of its own, so the reader could no longer tell
+  // which entries came from git and which came from the contributor.
+  const hostile = 'src/ok.ts\n  A plugins/by-name/dsh-hi/dsh-hint-shell/plugin.yml'
+  const problems = checkDiff([...GOOD, { status: 'M', path: hostile }])
+  const listing = problems.filter(problem => problem.startsWith('  '))
+  assert.equal(listing.length, 2, problems.join('; '))
+  for (const line of listing) assert.ok(!line.includes('\n'), JSON.stringify(line))
+  assert.ok(listing.some(line => line.includes('\\n')), problems.join('; '))
 })
 
 test('checkDiff tells the author to split the pull request', () => {
@@ -378,6 +390,112 @@ test('changedFiles reports what the pull request added once the base branch has 
       process.chdir(previous)
     }
   } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('check reads the plugin id from every way YAML lets it be written', () => {
+  // The title check compares against the id, so the id has to be read the way YAML is read. A pattern match against
+  // `^id:` understood one of these five forms: it kept the quotes in the quoted ones, which rejected a correct submission
+  // for a title that named the plugin right, and it found nothing in the commented and indented ones, which skipped the
+  // title check entirely and let any title through.
+  // Every form below is a whole valid document that differs only in how the `id` line is written, because that is the one
+  // line this function reads. The indented one indents the entire mapping: a mapping is measured from its first key, so
+  // indenting only the `id` line would make the file invalid rather than differently written.
+  const forms = [
+    'id: dsh-hint-shell',
+    'id: "dsh-hint-shell"',
+    "id: 'dsh-hint-shell'",
+    'id: dsh-hint-shell # the plugin this submission adds',
+    '  id: dsh-hint-shell',
+  ]
+  for (const idLine of forms) {
+    const lines = VALID_YML.split('\n').map(line => (idLine.startsWith(' ') ? `  ${line}` : line))
+    lines[0] = idLine
+    const yml = lines.join('\n')
+    const root = treeWith('plugins/by-name/dsh-hi/dsh-hint-shell/plugin.yml', yml)
+    const previous = process.cwd()
+    try {
+      process.chdir(root)
+      assert.deepEqual(
+        check(['feat: add a plugin'], GOOD, undefined, 'HEAD', 'feat: add or update plugin dsh-hint-shell'),
+        [],
+        idLine,
+      )
+    } finally {
+      process.chdir(previous)
+      removeTree(root)
+    }
+  }
+})
+
+test('check still rejects a title that does not name the plugin', () => {
+  // The same read, asked the other way: if the id survives these forms, a wrong title must still be caught. Without this
+  // half, a `submittedId` returning `null` would look like a pass for every title.
+  const yml = VALID_YML.replace('id: dsh-hint-shell', 'id: dsh-hint-shell # the plugin this submission adds')
+  const root = treeWith('plugins/by-name/dsh-hi/dsh-hint-shell/plugin.yml', yml)
+  const previous = process.cwd()
+  try {
+    process.chdir(root)
+    const problems = check(['feat: add a plugin'], GOOD, undefined, 'HEAD', 'totally unrelated title')
+    assert.ok(problems.some(problem => problem.includes('totally unrelated title')), problems.join('; '))
+  } finally {
+    process.chdir(previous)
+    removeTree(root)
+  }
+})
+
+test('changedFiles reports a path outside plain ASCII verbatim', () => {
+  // git escapes such a path by default and wraps it in quotes, which stops it matching the metadata path pattern: the
+  // submission was told it sat at the wrong path while the path was the one thing it had right.
+  const root = mkdtempSync(join(tmpdir(), 'contrib-check-'))
+  const run = (args: string[]): string => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: 'pipe' })
+  const commit = (message: string): void => {
+    run(['-c', 'user.email=test@example.com', '-c', 'user.name=test', 'add', '--all'])
+    run(['-c', 'user.email=test@example.com', '-c', 'user.name=test', 'commit', '--quiet', '--message', message])
+  }
+  run(['init', '--quiet', '--initial-branch', 'main'])
+  writeFileSync(join(root, 'placeholder.txt'), 'start\n')
+  commit('initial')
+  const base = run(['rev-parse', 'HEAD']).trim()
+  const path = 'plugins/by-name/中文/dsh-hint-shell/plugin.yml'
+  mkdirSync(join(root, path, '..'), { recursive: true })
+  writeFileSync(join(root, path), VALID_YML)
+  commit('feat: add a plugin')
+  const head = run(['rev-parse', 'HEAD']).trim()
+  const previous = process.cwd()
+  try {
+    process.chdir(root)
+    assert.deepEqual(changedFiles(base, head), [{ status: 'A', path }])
+  } finally {
+    process.chdir(previous)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('changedFiles reports a path containing a tab verbatim', () => {
+  // A tab is the separator in the default output, so a path that contains one cannot be read back out of it.
+  const root = mkdtempSync(join(tmpdir(), 'contrib-check-'))
+  const run = (args: string[]): string => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: 'pipe' })
+  const commit = (message: string): void => {
+    run(['-c', 'user.email=test@example.com', '-c', 'user.name=test', 'add', '--all'])
+    run(['-c', 'user.email=test@example.com', '-c', 'user.name=test', 'commit', '--quiet', '--message', message])
+  }
+  run(['init', '--quiet', '--initial-branch', 'main'])
+  writeFileSync(join(root, 'placeholder.txt'), 'start\n')
+  commit('initial')
+  const base = run(['rev-parse', 'HEAD']).trim()
+  const path = 'plugins/by-name/a\tb/dsh-hint-shell/plugin.yml'
+  mkdirSync(join(root, path, '..'), { recursive: true })
+  writeFileSync(join(root, path), VALID_YML)
+  commit('feat: add a plugin')
+  const head = run(['rev-parse', 'HEAD']).trim()
+  const previous = process.cwd()
+  try {
+    process.chdir(root)
+    assert.deepEqual(changedFiles(base, head), [{ status: 'A', path }])
+  } finally {
+    process.chdir(previous)
     rmSync(root, { recursive: true, force: true })
   }
 })

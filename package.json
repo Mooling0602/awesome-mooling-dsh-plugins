@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "prepare": "git config core.hooksPath .githooks || true",
-    "test": "node src/index/ensure.ts && node --test",
+    "test": "node src/index/ensure.ts && node --test 'src/**/*.test.ts'",
     "check": "node src/index/ensure.ts && tsc --noEmit",
     "registry": "node src/registry/build.ts",
     "sources": "node src/sources/build.ts",

@@ -31,8 +31,15 @@ interface Bilingual {
   readonly zh: string
 }
 
-/** What each check step is called in `pr.yml`, in the order that workflow runs them. */
-const CHECKS: readonly { readonly name: string; readonly check: Bilingual; readonly about: Bilingual }[] = [
+/**
+ * What each check step is called in `pr.yml`, in the order that workflow runs them.
+ *
+ * The names are the binding to the workflow, and nothing else in this file restates them: a row is matched to a step by
+ * its name alone, so a step renamed in `pr.yml` stops matching here and its row silently becomes "Not run" while the run
+ * itself stays green. `report.test.ts` reads `pr.yml` and fails when the two disagree, which is what turns that silent
+ * drift into a red test.
+ */
+export const CHECKS: readonly { readonly name: string; readonly check: Bilingual; readonly about: Bilingual }[] = [
   {
     name: 'Dependencies',
     check: { en: 'Dependencies', zh: '依赖' },
@@ -94,6 +101,8 @@ export interface Step {
 export interface Job {
   /** The job's key or name; not used to pick checks, since all of them run in one job. */
   readonly name?: string
+  /** The job's own conclusion, which is how a run that skipped every check is told apart from one that passed them. */
+  readonly conclusion?: string | null
   /** The steps the job ran, in order. */
   readonly steps?: readonly Step[]
 }
@@ -108,10 +117,13 @@ export interface Row {
   readonly about: Bilingual
 }
 
+/** What the checks themselves established about a pull request. */
+export type Verdict = 'success' | 'failure'
+
 /** Everything the renderer needs about one run. */
 export interface Report {
-  /** The run's overall conclusion, as GitHub reports it: `success`, `failure`, `cancelled`, and so on. */
-  readonly conclusion: string
+  /** What the checks established, which is not always what the run as a whole concluded. */
+  readonly verdict: Verdict
   /** The jobs the run reported. */
   readonly jobs: readonly Job[]
 }
@@ -155,20 +167,60 @@ export function resultOf(conclusion: string | null): Bilingual {
 }
 
 /**
+ * Collect what each check concluded, by check name.
+ *
+ * A step that never started is absent from the payload rather than reported with a null conclusion, so a missing entry and
+ * a null one mean the same thing here and are flattened together.
+ * @param jobs - the jobs the run reported.
+ * @returns the conclusion of every check that appears anywhere in the run.
+ */
+function conclusionsOf(jobs: readonly Job[]): Map<string, string | null> {
+  const byName = new Map<string, string | null>()
+  for (const job of jobs) {
+    for (const step of job.steps ?? []) byName.set(step.name, step.conclusion)
+  }
+  return byName
+}
+
+/**
  * Collect the table rows for a run.
  * @param jobs - the jobs the run reported.
  * @returns one row per check, in workflow order, whether or not the run reached it.
  */
 export function rowsOf(jobs: readonly Job[]): Row[] {
-  const byName = new Map<string, string | null>()
-  for (const job of jobs) {
-    for (const step of job.steps ?? []) byName.set(step.name, step.conclusion)
-  }
+  const byName = conclusionsOf(jobs)
   return CHECKS.map(({ name, check, about }) => ({
     check,
     result: resultOf(byName.get(name) ?? null),
     about,
   }))
+}
+
+/**
+ * Work out what the checks established about the pull request.
+ *
+ * This is not the run's conclusion, and the difference is the whole point. A run that never reached the checks still
+ * concludes `success`: `/recheck` runs are started by a comment, the job that builds and tests is skipped for every
+ * comment that is not exactly `/recheck`, and a run with nothing left to do succeeds at doing nothing. Reading the run's
+ * conclusion as a verdict turned such a run into "all checks passed, ready to merge", and because the comment is updated
+ * in place, an unrelated comment could replace a genuine failure with a clean bill of health.
+ *
+ * A failure needs no special reading: a run concludes `failure` only because a job in it failed, and a job fails only
+ * because a step in it did, whether or not that step is one of the checks. So a failing run is a failing verdict, and only
+ * the passing direction has to be earned: it counts as a pass when at least one check actually reached a conclusion and
+ * none of them failed.
+ * @param jobs - the jobs the run reported.
+ * @param conclusion - the run's overall conclusion.
+ * @returns the verdict, or null when the run never reached the checks and there is nothing to say about them.
+ */
+export function verdictOf(jobs: readonly Job[], conclusion: string): Verdict | null {
+  if (conclusion !== 'success') return 'failure'
+  const byName = conclusionsOf(jobs)
+  const concluded = CHECKS.map(({ name }) => byName.get(name)).filter(
+    (result): result is string | null => result !== undefined,
+  )
+  if (concluded.length === 0) return null
+  return concluded.includes('failure') ? 'failure' : 'success'
 }
 
 /**
@@ -181,7 +233,7 @@ export function rowsOf(jobs: readonly Job[]): Row[] {
  * @returns the markdown body, marker first so a later run can find it.
  */
 export function render(report: Report): string {
-  const passed = report.conclusion === 'success'
+  const passed = report.verdict === 'success'
   const lines: string[] = [MARKER]
   if (passed) {
     lines.push('## ✅ Checks passed / 检查全部通过', '')
@@ -253,5 +305,13 @@ if (invokedDirectly()) {
     console.error(`Nothing to report for a ${conclusion} run.`)
     process.exit(0)
   }
-  process.stdout.write(render({ conclusion, jobs: jobsOf(readFileSync(path, 'utf8')) }))
+  const jobs = jobsOf(readFileSync(path, 'utf8'))
+  const verdict = verdictOf(jobs, conclusion)
+  if (verdict === null) {
+    // The run concluded successfully without any check reaching a conclusion, which is what a `/recheck` run that judged
+    // nothing looks like. Reporting it would overwrite a real verdict with a table of "not run".
+    console.error(`Nothing to report for a ${conclusion} run that reached no check.`)
+    process.exit(0)
+  }
+  process.stdout.write(render({ verdict, jobs }))
 }

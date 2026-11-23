@@ -22,49 +22,148 @@ on:
     # job on the platform. An offset well clear of the hour start is the documented way to improve the chance it runs.
     - cron: '23 * * * *'
   workflow_dispatch:
+    inputs:
+      # A manual run publishes the commit it was started on, which is normally the tip of `main`. It does not publish an
+      # older one unless that is what was asked for, because the two are indistinguishable once the run is queued: a
+      # dispatch on a branch that has since been merged deploys a tree `main` has already moved past, and a run that
+      # waits its turn can start long after that. Whether it is stale is a question about `main`, not about the trigger,
+      # so it is answered the same way for every trigger and the exemption is a thing a person asks for by name.
+      rollback:
+        description: Publish this run's commit even if main has moved on (an intentional rollback)
+        type: boolean
+        default: false
 
 # One deploy at a time: two runs publishing different packuments to the same KV namespace would leave the index and the
 # registry describing different versions.
+#
+# `queue: max` because a run that waits here must not be dropped. The default queue holds a single pending run and
+# replaces it with each new arrival, so a push landing while a timer run was pending would discard the timer, and a manual
+# run landing during two pushes would discard one of them — silently, since the discarded run never starts and so never
+# reports anything. Publishing is a deploy that already builds everything it needs, and waiting costs only time.
+#
+# This group is shared with `update-cf-worker.yml`, which deploys the same worker.
 concurrency:
   group: registry
   cancel-in-progress: false
+  queue: max
+
+# No workflow-level `env` on purpose. Wrangler authenticates from `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`,
+# so no step needs `wrangler login` or a committed token — but a workflow-level variable also reaches `pnpm test`, which
+# runs the test suite after contributed code has been merged. Each deploying step carries the pair itself, and
+# `wrangler deploy --dry-run` needs neither, because it builds the worker without contacting the account.
 
 permissions:
   contents: read
 
-env:
-  # Wrangler authenticates from these two variables, so no step needs `wrangler login` or a committed token.
-  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
+# One job, in order: build the packuments, build the index from them, check, deploy the worker that carries the index,
+# then write the packuments. Splitting the index into a second job would mean building the packuments twice and deploying
+# the same worker twice, since a job's file tree is not shared with another job's.
 jobs:
   registry:
     name: Publish registry
     runs-on: ubuntu-latest
-    # The index job reads this to decide whether there is anything to publish. It has to be a job output rather than a
-    # step output, because a job cannot see the steps of another job.
-    outputs:
-      publish: ${{ steps.changed.outputs.publish || 'true' }}
     steps:
       - uses: actions/checkout@v7
 
+      # A run joins the group when it starts, not when it was triggered, so a run that waited its turn can begin long
+      # after the commit it carries stopped being the tip of `main` — two merges a minute apart are enough. Deploying it
+      # would put an older tree in front of the newer one, and the worker would keep serving that older code: a rollback
+      # nobody asked for.
+      #
+      # What being behind means depends on who is waiting for the result, and that is the trigger, not the file: this
+      # workflow runs on a timer and on every push as well as on demand.
+      #
+      # A push or timer run that is behind stops quietly. A newer commit means a newer run of this workflow, queued
+      # behind this one in the same group, which publishes its own tree when it gets here, so the superseded run has
+      # nothing left to do and nothing to report as broken. Failing would put a red mark on `main` for a merge that was
+      # entirely fine, on the mere suspicion that the run was late. What it does say is said as a warning, and every
+      # step that would build, deploy or write a KV record reads the answer and skips, so the run costs a checkout.
+      #
+      # A manual run that is behind fails. No later run of itself is queued behind it to put the newer tree back, so
+      # going green would report a deploy that did not happen, and the person who asked is the one who needs to know.
+      #
+      # `workflow_dispatch` is not exempt on its own: being dispatched by hand says a person chose the moment, not that
+      # the commit is still current — a dispatch on a branch that has since been merged carries a tree `main` has moved
+      # past, and a queued run can wait long enough for that to become true after it started. An intentional rollback is
+      # real and has to remain possible, so it is asked for explicitly with the `rollback` input; every other manual run
+      # answers the staleness question exactly as a push or a timer run does.
+      #
+      # A lookup that fails is not an answer, and the two are kept apart on purpose. Publishing on "could not tell" is
+      # how an older tree ends up in front of the newer one without anyone deciding that, so the lookup is retried a
+      # bounded number of times and then stops the run. The alternative — warn and deploy anyway — makes the whole gate
+      # advisory for anyone whose network happened to hiccup.
+      #
+      # The step runs for every trigger, so that `superseded` is always written by the same place rather than being a
+      # variable the deploy steps read out of a step that may not have run.
+      - name: Check that this run is still the tip of main
+        id: fresh
+        env:
+          # Empty for every trigger but `workflow_dispatch`, where it carries the input. The comparison below needs the
+          # event name as well as the value, so a `push` can never be exempted by it.
+          ROLLBACK: ${{ inputs.rollback }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ "$ROLLBACK" = "true" ]; then
+            echo "A rollback was asked for, so this run publishes the commit it carries however far main has moved on."
+            exit 0
+          fi
+          head=$(git rev-parse HEAD)
+          # Three attempts, because the answer decides whether anything is published at all and a single dropped
+          # connection is not an answer. It is still bounded: the point of asking is to publish soon, and a run that
+          # waited minutes for a lookup has spent the time the lookup was meant to save.
+          tip=''
+          for attempt in 1 2 3; do
+            tip=$(git ls-remote origin refs/heads/main | cut -f1) || tip=''
+            [ -n "$tip" ] && break
+            echo "Could not read refs/heads/main (attempt $attempt of 3)."
+            sleep 5
+          done
+          if [ -z "$tip" ]; then
+            echo "::error title=Nothing was published::refs/heads/main could not be read, so nothing says whether this run has been superseded — and publishing on a guess is exactly how an older tree ends up in front of the newer one. Nothing was deployed and no KV record was written. Re-run this workflow; if this commit is what should be published whatever main carries, ask for a rollback."
+            exit 1
+          fi
+          if [ "$head" = "$tip" ]; then
+            echo "This run carries the tip of main."
+            exit 0
+          fi
+          # Behind, and confirmed behind. What that means depends on who is waiting for the result, not on which file the
+          # workflow is in: `registry.yml` runs on a timer and on every push as well as on demand, so the same file
+          # contains both kinds.
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "::error title=Nothing was published::This run carries $head, but main has moved on to $tip, so publishing it would put the older tree in front of the newer one. A manual run is the only one that would publish this tree — no later run of itself is queued behind it to put the newer one back — so it stops here rather than going green about a deploy it did not make. Re-run the workflow from the tip of main, or enable the rollback input if publishing this commit is what you meant."
+            exit 1
+          fi
+          echo "::warning title=Superseded run::This run carries $head, but main has moved on to $tip, and the run for $tip publishes that tree when it gets here. Nothing is deployed or written by this one."
+          echo "superseded=true" >> "$GITHUB_OUTPUT"
+
       - uses: pnpm/action-setup@v6
+        if: steps.fresh.outputs.superseded != 'true'
         with:
           version: 10
 
       - uses: actions/setup-node@v7
+        if: steps.fresh.outputs.superseded != 'true'
         with:
           node-version: 24
           cache: pnpm
 
+      # A superseded run stops being worth anything at the gate above, and what is left for it to do is nothing at all:
+      # every step below reads the same answer and skips. Installing first would still be the slowest part of the run,
+      # and the whole point of asking early is that an overtaken run costs a checkout rather than a full build of a tree
+      # that no longer gets published.
       - run: pnpm install --frozen-lockfile
+        if: steps.fresh.outputs.superseded != 'true'
 
       # Reads each plugin's release assets, computes the tarball integrity from the exact bytes, and writes the
       # packuments plus the KV bulk file. The token keeps this inside the GitHub API rate limit.
       #
       # This runs before the checks because the index is built from these packuments, and the worker imports the index,
       # so `pnpm check` cannot type-check the worker until both exist.
+      #
+      # A superseded run skips it. The tree it would build is not the one that gets published — nothing below it runs —
+      # so building it spends GitHub API calls and a full checkout of every plugin's releases to produce files that are
+      # then thrown away.
       - name: Build registry data
+        if: steps.fresh.outputs.superseded != 'true'
         run: pnpm registry
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -72,6 +171,7 @@ jobs:
       # Always rebuilt here rather than reused: a stale index would make the checks below run against data CI did not
       # just produce.
       - name: Build index
+        if: steps.fresh.outputs.superseded != 'true'
         run: ./build-index.sh
 
       # A scheduled run exists because a plugin can publish without this repository seeing a push. Most of those hours
@@ -83,26 +183,30 @@ jobs:
       # the pipeline would work regardless, but it trades a stale index for a wrong one: the check fails chiefly when the
       # release data it reads is incomplete, and an index built from a half-read list drops plugins from the market
       # instead of merely showing yesterday's versions.
+      #
+      # A superseded run skips it as well, and that is not just about saving work: this step asks the deployed worker
+      # what it is serving and stops the run when it cannot read it, which turns a run that had already decided to
+      # publish nothing into a red one. The rebuild it would do is the same rebuild `Build index` was skipped for.
       - name: Check whether the index moved
         id: changed
-        if: github.event_name == 'schedule'
+        if: github.event_name == 'schedule' && steps.fresh.outputs.superseded != 'true'
         run: |
           node src/index/changed.ts "$RUNNER_TEMP/publish"
           echo "publish=$(cat "$RUNNER_TEMP/publish")" >> "$GITHUB_OUTPUT"
 
       - run: pnpm check
-        if: github.event_name != 'schedule' || steps.changed.outputs.publish == 'true'
+        if: (github.event_name != 'schedule' || steps.changed.outputs.publish == 'true') && steps.fresh.outputs.superseded != 'true'
       - run: pnpm test
-        if: github.event_name != 'schedule' || steps.changed.outputs.publish == 'true'
+        if: (github.event_name != 'schedule' || steps.changed.outputs.publish == 'true') && steps.fresh.outputs.superseded != 'true'
 
       - name: Verify the worker bundles
-        if: github.event_name != 'schedule' || steps.changed.outputs.publish == 'true'
+        if: (github.event_name != 'schedule' || steps.changed.outputs.publish == 'true') && steps.fresh.outputs.superseded != 'true'
         run: pnpm exec wrangler deploy --dry-run --outdir "$RUNNER_TEMP/worker"
 
       # wrangler does not expand `${...}` in wrangler.toml, so the namespace id is written into it here. The committed
       # file keeps the placeholder, which means a checkout can never deploy over the wrong namespace by accident.
       - name: Point the config at the namespace
-        if: github.event_name != 'schedule' || steps.changed.outputs.publish == 'true'
+        if: (github.event_name != 'schedule' || steps.changed.outputs.publish == 'true') && steps.fresh.outputs.superseded != 'true'
         env:
           KV_NAMESPACE_ID: ${{ secrets.KV_NAMESPACE_ID }}
         run: |
@@ -121,8 +225,15 @@ jobs:
       # run is the moment someone is already watching the deploy, so it is the right time to pay the cost.
       #
       # The listing is filtered by `--cache-plan`, so only decision records are removed and the packuments stay.
+      #
+      # This step carries no freshness guard of its own, and that is not an omission: it runs only for a manual trigger,
+      # and a manual run that is behind stops at the check above with a failed step, so it never gets here. A manual run
+      # that reaches this step is either current or carrying a rollback that was asked for by name.
       - name: Drop cached proxy decisions
         if: github.event_name == 'workflow_dispatch'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           pnpm exec wrangler kv key list --binding REGISTRY --remote > "$RUNNER_TEMP/kv-keys.json"
           node src/registry/build.ts --cache-plan < "$RUNNER_TEMP/kv-keys.json"
@@ -139,78 +250,32 @@ jobs:
       # upload came first, no worker change could ship at all, including a fix that had nothing to do with KV. A worker
       # whose data is one release stale is a working worker: the previous packuments are still in KV and still resolve.
       # A worker that cannot deploy is not.
+      #
+      # This deploy is also what publishes the index: the index ships inside the worker script. A failure therefore
+      # leaves users on the previous index as well, and is named as such rather than left as a bare wrangler error.
       - name: Deploy worker
-        if: github.event_name != 'schedule' || steps.changed.outputs.publish == 'true'
-        run: pnpm exec wrangler deploy
+        if: (github.event_name != 'schedule' || steps.changed.outputs.publish == 'true') && steps.fresh.outputs.superseded != 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if ! pnpm exec wrangler deploy; then
+            echo '::error title=Deploy failed::The worker was not deployed, so neither the registry code nor the index built in this run is live. Both keep serving the previous release. Re-run this workflow.'
+            exit 1
+          fi
 
       # A failure here must fail the run. The free plan caps how many KV writes an account may make per day, so an
       # exhausted quota is a real operational fault: plugins published in this run are not served, and leaving the run
       # green would hide that. The cause is named explicitly instead, so the fix is obvious without reading wrangler
       # output.
       - name: Upload packuments to KV
-        if: github.event_name != 'schedule' || steps.changed.outputs.publish == 'true'
+        if: (github.event_name != 'schedule' || steps.changed.outputs.publish == 'true') && steps.fresh.outputs.superseded != 'true'
         id: upload
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           if ! pnpm exec wrangler kv bulk put dists/registry/kv.json --binding REGISTRY --remote; then
             echo '::error title=Packument upload failed::The registry data was not published. If the log above says the free usage limit was reached, the account has exhausted its daily KV write quota (Cloudflare error 10048). The worker is already deployed and still serves the packuments from the previous run, so existing plugins keep installing, but this release is incomplete. Re-run this workflow once the quota resets.'
-            exit 1
-          fi
-
-  index:
-    name: Build index
-    needs: registry
-    # A scheduled run that found nothing changed has nothing to publish; skipping the job keeps the timers from filling
-    # the run list with deploys of identical data.
-    if: needs.registry.outputs.publish == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 10
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      # The index is built from the packuments, so this job produces them again rather than depending on the job above
-      # for a file tree, which is not shared between jobs.
-      - name: Build registry data
-        run: pnpm registry
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # Reads this repository's metadata and GitHub directly. The registry address it records in each npm-form entry is
-      # a constant in the generator, so nothing here asks the deployed worker what to list.
-      - name: Build index
-        run: ./build-index.sh
-
-      - run: pnpm check
-      - run: pnpm test
-
-      - name: Point the config at the namespace
-        env:
-          KV_NAMESPACE_ID: ${{ secrets.KV_NAMESPACE_ID }}
-        run: |
-          test -n "$KV_NAMESPACE_ID" || { echo 'KV_NAMESPACE_ID is not set' >&2; exit 1; }
-          sed -i "s|id = \"KV_NAMESPACE_ID\"|id = \"$KV_NAMESPACE_ID\"|" wrangler.toml
-          grep -n 'id = ' wrangler.toml
-
-      - name: Verify the worker bundles
-        run: pnpm exec wrangler deploy --dry-run --outdir "$RUNNER_TEMP/worker"
-
-      # The index ships inside the worker script, so publishing it is a deploy. That is the point: a KV write shared the
-      # small daily write quota with the packuments, and a day that exhausted the quota left users on the previous index
-      # even though the new one had been computed correctly.
-      #
-      # A failure here means users still see the previous index, so it must fail the run instead of leaving it green.
-      - name: Deploy worker
-        run: |
-          if ! pnpm exec wrangler deploy; then
-            echo '::error title=Index deploy failed::The market index was not published. It ships inside the worker script, so a failed deploy leaves the previous index live. Re-run this workflow.'
             exit 1
           fi

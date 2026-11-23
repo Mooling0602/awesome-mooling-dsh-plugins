@@ -73,43 +73,77 @@ permissions:
   contents: read
   pull-requests: write
 
-env:
-  # The registry and index builds read each plugin repository's default branch and releases, so every step that talks to
-  # GitHub needs this to stay inside the unauthenticated rate limit, which a shared CI address exhausts quickly.
-  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+# No lock here, and that is a decision rather than an omission. A workflow-level group is chosen for the whole run from
+# `github` alone: it cannot see what a job worked out, so the group had to spell out, inside one expression, every trigger
+# the run ignores — a comment that is not exactly `/recheck`, a label that is not `recheck` — and hand each of those a
+# group of its own so that they could not cancel a run with real work. The job that does the work keeps a lock of its own
+# instead, keyed on a lane whose name `resolve` decides in a script, which is the same rule written once and readably.
+#
+# The two jobs are ordered rather than concurrent because that is what they are: which pull request is being judged has to
+# be answered before anything is judged. The label is taken off in the first job for the same reason it is answerable
+# there — it is a request being accepted, not a result — and because that job takes no lock, so nothing can cancel it
+# between accepting the request and clearing it.
+#
+# No job-level `env` on purpose. A job-level variable reaches every step, and `Test` runs the test suite, which after a
+# merge is the one place a contributed plugin's own code could run. The registry build is the only step here that needs
+# the token, and it carries it locally instead.
 
 jobs:
-  check:
-    name: Check
-    # A comment only runs the check when it says exactly `/recheck` and sits on a pull request. `issue_comment` fires for
-    # issue comments on ordinary issues too, and a comment on an issue has no pull request to judge. The comparison is an
-    # exact whole-body match, because GitHub's expression syntax has no trim and no case folding to apply first: a comment
-    # reading "please /recheck this" must not start a run, and neither must `/RECHECK`.
-    #
-    # A `labeled` event runs only for the `recheck` label, because every other label a maintainer adds — `plugins`, a
-    # category, a triage marker — says nothing about wanting the checks run again, and re-checking on each of them would
-    # spend three runs on one pull request.
-    if: >-
-      (github.event_name == 'pull_request_target' &&
-      (github.event.action != 'labeled' || github.event.label.name == 'recheck')) ||
-      (github.event.issue.pull_request != null && github.event.comment.body == '/recheck')
+  # Which pull request this run is about, and whether it has anything to do at all.
+  #
+  # This job holds no lock because it contradicts nobody: it reads one pull request and removes one label, and two runs
+  # doing that concurrently reach the same state, since the value each writes is the one the pull request itself carries
+  # and a label can only be absent once. Putting it behind a lock would recreate what the lock exists to prevent — a run
+  # that is cancelled before it can clean up leaves a `recheck` label that answers no further `labeled` event, so that
+  # pull request could never be rechecked by label again. Here that cannot happen: nothing can cancel this job.
+  resolve:
+    name: Resolve
     runs-on: ubuntu-latest
+    outputs:
+      # Empty when the run has nothing to do, which is what skips the job below. An `issue_comment` event fires for
+      # comments on ordinary issues too, and an issue has no pull request to judge.
+      number: ${{ steps.pr.outputs.number }}
+      lane: ${{ steps.pr.outputs.lane }}
+      head: ${{ steps.pr.outputs.head }}
+      base: ${{ steps.pr.outputs.base }}
+      ref: ${{ steps.pr.outputs.ref }}
+      title: ${{ steps.pr.outputs.title }}
     steps:
-      # Which pull request is being judged, and where its head and base are.
+      # Which pull request is being judged, where its head and base are, and which lane the run belongs to.
       #
-      # A `pull_request_target` run carries that in the event, and the values are used as they arrive; this covers the
-      # `opened` and `labeled` paths alike, because both are `pull_request_target`. A `/recheck` run carries only an issue
-      # number, so the same three facts are read back from the API instead, and everything below reads them from this step
-      # rather than from the event. That keeps one set of `${{ }}` references working for every trigger instead of
-      # duplicating every step.
+      # A `pull_request_target` run carries the first three in the event and they are used as they arrive; a `/recheck`
+      # run carries only an issue number, so the same facts are read back from the API instead. Everything below reads
+      # them from this job rather than from the event, so one set of references works for every trigger.
       #
-      # The head is re-read from the API rather than reused from any earlier value: a recheck is asked for precisely
-      # because the pull request has moved on, so the freshest head is the only one worth judging.
+      # A `/recheck` comment judges the freshest head rather than the head the comment was written against: a recheck is
+      # asked for precisely because the pull request has moved on, so the commit it names is the one worth judging.
+      #
+      # The lane is the key of the lock the `check` job takes, and the two kinds of run that write a check cannot share
+      # one. GitHub records a check run against the commit the workflow checked out, and the trigger decides which commit
+      # that is: a `pull_request_target` run is recorded against the pull request's head, which is what the merge is gated
+      # by, while an `issue_comment` run is recorded against the tip of the default branch, so its check lands on `main`
+      # and never satisfies the gate. Sharing a lane let a comment cancel the run that was about to write the required
+      # check, leaving a cancelled check on the pull request's head and nothing to replace it.
+      #
+      # A run with nothing to do is not given a lane at all: it stops here, without writing one, and the `check` job is
+      # skipped rather than queued. `needs.resolve.outputs.lane` is what makes that happen, and it is why this script does
+      # not have to invent a lock name for a run that will never take one.
+      #
+      # The lane is written before anything is fetched over the network, and the rest of the outputs after. That order is
+      # what keeps "this event asked for no check" apart from "this event asked for one and the read failed". Both used to
+      # leave every output empty, and `check` keyed on an empty number: a run whose API call died skipped the only job that
+      # writes the required check, and a skipped job reports success, so the pull request read as judged and passing when
+      # nothing had judged it. The lane is decided from the event alone, so it survives a failed fetch; `check` keys on it
+      # and fails loudly when the outputs the fetch should have produced are missing.
       - name: Read the pull request
         id: pr
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          LABEL: ${{ github.event.label.name }}
+          BODY: ${{ github.event.comment.body }}
+          IS_PR: ${{ github.event.issue.pull_request != null }}
           NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
           # A title is written by a contributor and reaches this script through the environment, never interpolated into
           # it: a title carrying a quote, a backtick or a `$` would otherwise be expanded by the shell before it was
@@ -119,6 +153,37 @@ jobs:
           EVENT_REF: ${{ github.base_ref }}
           EVENT_TITLE: ${{ github.event.pull_request.title }}
         run: |
+          # A label only asks for a run when it is `recheck`: every other label a maintainer adds — `plugins`, a category,
+          # a triage marker — says nothing about wanting the checks run again, and re-checking on each of them would
+          # spend three runs on one pull request.
+          #
+          # A comment only asks for a run when it says exactly `/recheck` and sits on a pull request; `issue_comment`
+          # fires for comments on ordinary issues too, and an issue has no pull request to judge. The comparison is an
+          # exact whole-body match, because GitHub's expression syntax has no trim and no case folding to apply first:
+          # "please /recheck this" must not start a run, and neither must `/RECHECK`.
+          if [ "$EVENT" = "pull_request_target" ]; then
+            if [ "$ACTION" = "labeled" ] && [ "$LABEL" != "recheck" ]; then
+              echo "This run was started by the \`$LABEL\` label, which asks for no check."
+              exit 0
+            fi
+            lane=head
+          elif [ "$IS_PR" = "true" ] && [ "$BODY" = "/recheck" ]; then
+            lane=comment
+          else
+            echo "This comment does not ask for the checks to run again."
+            exit 0
+          fi
+
+          # Past this line the event has asked for a check, so the lane is written before anything that can fail. It is
+          # what makes `check` run, and a run that could not read the pull request still has to write a check — a green
+          # one saying nothing was judged would satisfy the merge gate for a commit nobody looked at.
+          echo "lane=$lane" >> "$GITHUB_OUTPUT"
+
+          if [ -z "$NUMBER" ]; then
+            echo "::error::The event asked for a check but carried no pull request number."
+            exit 1
+          fi
+
           if [ "$EVENT" = "pull_request_target" ]; then
             {
               echo "number=$NUMBER"
@@ -129,7 +194,11 @@ jobs:
             } >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          gh api "repos/${{ github.repository }}/pulls/$NUMBER" > "$RUNNER_TEMP/pr.json"
+
+          if ! gh api "repos/${{ github.repository }}/pulls/$NUMBER" > "$RUNNER_TEMP/pr.json"; then
+            echo "::error::The event asked for a check but pull request $NUMBER could not be read."
+            exit 1
+          fi
           {
             echo "number=$NUMBER"
             echo "head=$(jq -r .head.sha "$RUNNER_TEMP/pr.json")"
@@ -137,6 +206,103 @@ jobs:
             echo "ref=$(jq -r .base.ref "$RUNNER_TEMP/pr.json")"
             echo "title=$(jq -r .title "$RUNNER_TEMP/pr.json")"
           } >> "$GITHUB_OUTPUT"
+
+      # The `recheck` label is a request, not a state, so it is taken back off as soon as the run has accepted it — before
+      # anything is judged, so the label is available again immediately instead of at the end of a build.
+      #
+      # `always()` because the request was answered by accepting it, whatever the checks later say, and because leaving it
+      # on after a failure would make the next attempt look like it had already been asked for.
+      #
+      # `github.event.label.name == 'recheck'` is checked here as well as deciding the lane above, and the difference
+      # matters now that this job runs for every trigger: the label named in the event is not necessarily the label this
+      # step removes, so a run started by adding, say, `plugins` would take off a `recheck` a maintainer had put there for
+      # a separate request.
+      #
+      # A 404 is the one answer that is not a problem: it means the label is already off, which is the state this step
+      # exists to reach. Anything else is reported as a warning and swallowed, because a label that would not come off is
+      # not worth turning a good run red over — but it is *said*, rather than hidden behind a successful exit.
+      - name: Take the recheck label back off
+        if: always() && github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'recheck'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if gh api --method DELETE "repos/${{ github.repository }}/issues/$NUMBER/labels/recheck"; then
+            echo "The recheck label is off again."
+            exit 0
+          fi
+          status=$(gh api "repos/${{ github.repository }}/issues/$NUMBER/labels" --jq '[.[].name] | join(",")')
+          echo "::warning::Could not remove the recheck label; the labels now read: $status"
+
+  check:
+    # `Check` is the name the ruleset requires, and it has to be earned rather than assumed. GitHub keeps a check run for
+    # every job a run contains, including one its `if` skipped, and a skipped check counts as a passing one, so a skipped
+    # job called `Check` is indistinguishable from a job that judged the pull request and found it good.
+    #
+    # That is not hypothetical here. A maintainer adds a `plugins` or category label, which is a `pull_request_target`
+    # event on the same commit; `resolve` finds no lane, the `if` below skips this job, and the skip would be the newest
+    # result under the required name — a green tick over a failure the pull request had actually earned, published by an
+    # event that judged nothing. Not queueing such a run was not enough: the result it leaves behind is the problem, so
+    # the name itself has to say whether anything was judged.
+    #
+    # So the name repeats the `if`: skip because there was nothing to judge, and report under a name no rule refers to;
+    # run because there was something to judge, and report as `Check`. The two expressions are deliberately the same one,
+    # and a test asserts it, because a name that drifts from the `if` breaks this either way — a skipped `Check` hides a
+    # failure, and a `Check` under another name leaves a pull request waiting on a check that nothing will ever report.
+    name: ${{ (needs.resolve.outputs.lane == '' && needs.resolve.result == 'success') && 'Nothing to judge' || 'Check' }}
+    needs: resolve
+    # Only a run that has something to judge writes the required check. The decision was made by `resolve`, where it can
+    # be read — and it is read from the lane rather than the number. The lane is decided from the event alone and written
+    # before anything is fetched, so it is present in both cases that matter here: the event asked for no check (no lane,
+    # this job is skipped, and the name above keeps that skip out of the required name) and the event asked for one but
+    # `resolve` failed to read the pull request (lane present, this job runs, and its first step turns it red). Keyed on
+    # the number those two collapsed into one empty value, and the second case skipped the only job that writes the check.
+    #
+    # `always()` because `resolve` failing would otherwise skip this job even with the lane written: a skipped required
+    # check reports success, which would let a commit through that nothing had looked at. The `||` covers the case where
+    # `resolve` died before it could even write the lane — there is then nothing to read a lane out of, and that is
+    # precisely the situation that must not end in a green tick, so the job runs and its first step turns it red.
+    if: always() && (needs.resolve.outputs.lane != '' || needs.resolve.result != 'success')
+    # One run at a time per pull request, but only among runs that write the same check about the same commit.
+    #
+    # Pushing twice in quick succession starts a second run while the first is still building, and both would then write
+    # the same required check: the older one can finish last and leave the pull request judged by the commit before the
+    # newest push. Cancelling is right there rather than queueing, because a run of an older head has nothing left to
+    # answer — unlike `registry.yml`, where a cancelled deploy would leave data half-published.
+    #
+    # The head is in the key, and that is what makes "the one that loses is the older one" true rather than hoped for.
+    # A job joins its group when it starts, not when the workflow was dispatched, so a run of an older head whose
+    # `resolve` job happens to be slow joins *after* a newer run has started. Keyed on the pull request alone it would
+    # then cancel the newer run and judge the pull request by the commit that had already been replaced — the required
+    # check would go on reporting the old verdict. With the head in the key the two runs are in different groups, so
+    # neither can cancel the other.
+    #
+    # A superseded run therefore keeps running, and that is affordable: its check is recorded against the commit it was
+    # triggered by, which is no longer the pull request's head, so it can neither satisfy nor hold up the merge gate,
+    # and the report it would post is dropped by `pr-result.yml` once it sees the pull request has moved on.
+    #
+    # The lane stays in the key next to the head. Two runs of the same head in different lanes judge the same commit but
+    # write to different places — a `pull_request_target` run writes the check on the head, an `issue_comment` run writes
+    # one on `main` — so neither can invalidate the other, and serialising them would only make a recheck wait behind a
+    # push it does not conflict with.
+    concurrency:
+      group: pr-${{ needs.resolve.outputs.number }}-${{ needs.resolve.outputs.lane }}-${{ needs.resolve.outputs.head }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    steps:
+      # This job runs whenever the lane was written, including when the rest of `resolve` fell over, and that combination
+      # needs to end in a failed check rather than in a confusing one. The lane is written first, from the event alone, so
+      # a failed API call still leaves this job running; without this step the run would reach the fetch below with an
+      # empty commit and fail on something that reads as a broken workflow instead of a check that could not be made.
+      #
+      # `needs.resolve.result` is checked as well as the outputs, because a step that died before writing anything leaves
+      # the outputs empty for the same reason a run that never asked for a check does — and only one of those two is a
+      # failure. Anything that gets here has a lane, so it asked for a check; a check it cannot make is a failed check.
+      - name: Refuse to judge what was not read
+        if: needs.resolve.result != 'success' || needs.resolve.outputs.head == '' || needs.resolve.outputs.base == ''
+        run: |
+          echo "::error::The event asked for a check, but the pull request's head and base could not be read, so nothing was judged. See the Resolve job above for the failure."
+          exit 1
 
       # The default branch as it stands right now, checked out at the workspace root. Everything that runs comes from
       # here: the scripts, the configuration, the type definitions, and the tests. A pull request cannot alter any of it.
@@ -159,33 +325,44 @@ jobs:
           fetch-depth: 0
           filter: blob:none
 
-      # The pull request's own commits, kept in a subdirectory and used for exactly one thing: its `plugins/` tree, which
-      # the step below copies over the base one. `allow-unsafe-pr-checkout` is required because this is a
-      # `pull_request_target` run and the checkout action refuses untrusted code there by default. The flag is safe here
-      # only because nothing in that directory is executed: it is read as YAML, and it is deleted before any build runs.
+      # The pull request's own commits, fetched into this repository rather than checked out into a directory of their
+      # own. Only one thing is wanted from them: the `plugins/` tree, which the step below copies over the base one, and
+      # which the checker also reads the submitted `plugin.yml` out of.
       #
-      # The history is fetched for the same reason as above: the branch point is only discoverable once both sides share
-      # history, and the head is what the branch point is measured back from.
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ steps.pr.outputs.head }}
-          path: .pr
-          fetch-depth: 0
-          filter: blob:none
-          allow-unsafe-pr-checkout: true
+      # A second `actions/checkout` with `path:` would create a repository of its own, and `path:` is a working directory
+      # the action runs `git init` in, not a directory inside this one. The commits would then live there and nowhere the
+      # checker looks: `git show <head>:<path>` and `git merge-base <base> <head>` run in this workspace against this
+      # repository, so a submission from a fork — whose commits are in no branch this repository has — would fail with
+      # `bad object` instead of being judged. Fetching here puts them where those commands find them.
+      #
+      # The head is fetched by commit rather than through `refs/pull/<n>/head`, and the difference matters: that ref names
+      # whatever the pull request's head is *at the moment of the fetch*, so a run of an older commit would fetch a newer
+      # one and judge a tree it was not started for. A commit SHA names one tree forever, so this fetches exactly what the
+      # run was triggered by. GitHub serves a fetch of a reachable commit by SHA, which is what makes this possible.
+      #
+      # The full history of the head is fetched, not `--depth 1`: the checker has to find where the pull request branched
+      # off, and a shallow head has no ancestry to be measured back from. The base checkout above already holds most of
+      # those objects, so only the pull request's own commits come down, and the filter skips their file contents.
+      - name: Fetch the pull request's commits
+        env:
+          HEAD_SHA: ${{ needs.resolve.outputs.head }}
+        run: |
+          git fetch --no-tags --filter=blob:none origin "$HEAD_SHA"
 
-      # The head tree exists only as a git object for the checker to read the submitted `plugin.yml` from, and only as a
-      # source of `plugins/`. The working copy of the head is removed so that the build, the type check and the tests
-      # below run against files that came from `main`: a submission that added a test, a dependency or a source file
-      # would otherwise be silently included in its own judgement.
+      # The head tree is used as a source of `plugins/` and as git objects for the checker to read, and for nothing else.
+      # Its working copy is replaced with the base one for everything outside `plugins/`, so that the build, the type
+      # check and the tests below run against files that came from `main`: a submission that added a test, a dependency
+      # or a source file would otherwise be silently included in its own judgement.
       #
-      # The objects stay reachable because the branch point ties them together: `origin/main` and the fetched head are
-      # now two tips within one repository, so removing the working copy no longer strands the commits.
+      # `git reset` after the checkout unstages what it just staged, leaving the same shape a copy would have: the files
+      # in the working tree, and the index still describing the base commit.
       - name: Keep only the submitted plugins
+        env:
+          HEAD_SHA: ${{ needs.resolve.outputs.head }}
         run: |
           rm -rf plugins
-          cp -r .pr/plugins .
-          rm -rf .pr
+          git checkout "$HEAD_SHA" -- plugins
+          git reset --quiet -- plugins
 
       - uses: pnpm/action-setup@v6
         with:
@@ -218,10 +395,10 @@ jobs:
       # quote, a backtick or a `$` would otherwise be expanded by the shell before the checker ever saw it.
       - name: Check the pull request title and the submitted metadata
         env:
-          BASE_SHA: ${{ steps.pr.outputs.base }}
-          HEAD_SHA: ${{ steps.pr.outputs.head }}
-          BASE_REF: ${{ steps.pr.outputs.ref }}
-          PR_TITLE: ${{ steps.pr.outputs.title }}
+          BASE_SHA: ${{ needs.resolve.outputs.base }}
+          HEAD_SHA: ${{ needs.resolve.outputs.head }}
+          BASE_REF: ${{ needs.resolve.outputs.ref }}
+          PR_TITLE: ${{ needs.resolve.outputs.title }}
         run: node src/contrib/check.ts --base "$BASE_SHA" --head "$HEAD_SHA" --target "$BASE_REF" --title "$PR_TITLE"
 
       # The registry data is built first because the index is read from these packuments and the worker imports the
@@ -229,6 +406,11 @@ jobs:
       # for the same reason.
       - name: Build registry data
         run: pnpm registry
+        env:
+          # Reads each plugin repository's default branch and releases, so it needs the token to stay inside the
+          # unauthenticated rate limit, which a shared CI address exhausts quickly. Scoped to this step: the steps after it
+          # run code the pull request contributed.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build index
         run: ./build-index.sh
@@ -248,26 +430,50 @@ jobs:
       - name: Verify the worker bundles
         run: pnpm exec wrangler deploy --dry-run --outdir "$RUNNER_TEMP/worker"
 
-      # The `recheck` label is a request, not a state, so it is taken back off once the run has answered it. Without this
-      # the label could only be used once: adding a label a pull request already carries fires no `labeled` event, so a
-      # second recheck would do nothing until someone removed it by hand.
+      # What this run judged, for `pr-result.yml` to read before it posts anything.
       #
-      # `always()` because a failing run answered the request just as much as a passing one, and leaving the label on after
-      # a failure would make the next attempt look like it had already been asked for.
+      # A report is written once the checks are done, and by then the pull request may have moved on: a verdict about a
+      # commit that has been replaced would overwrite the report of the run that judged the newest one, leaving the pull
+      # request described by a judgement nobody asked for. `pr-result.yml` therefore compares this head with the pull
+      # request's head before it writes.
       #
-      # A 404 is the one answer that is not a problem: it means the label is already off, which is the state this step
-      # exists to reach. Anything else is reported as a warning and swallowed, because the checks have already decided the
-      # result and a label that would not come off is not worth turning a passing run red over — but it is *said*, rather
-      # than hidden behind a successful exit, so the failure is visible if it ever happens.
-      - name: Take the recheck label back off
-        if: always() && github.event_name == 'pull_request_target' && github.event.action == 'labeled'
+      # The head has to travel as a file because the event that delivers the report does not carry it. Under
+      # `pull_request_target` a `workflow_run` event does carry what was judged in `head_sha`, but under `issue_comment`
+      # the same field holds the tip of the default branch — the run was made about an issue number, and the head it read
+      # back from the API is known only inside this workflow.
+      #
+      # `if: always()` because a failed run is exactly the report that matters most, and it must be attributable too.
+      #
+      # The number is checked rather than assumed: a run whose `resolve` failed has no number to record, and `tonumber`
+      # on nothing would fail this step with a message about jq rather than about the run. Recording nothing is the
+      # honest answer there, and the step below turns that into a failed upload, which is a report nobody should read
+      # as a verdict anyway.
+      - name: Record what was judged
+        if: always()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NUMBER: ${{ steps.pr.outputs.number }}
+          NUMBER: ${{ needs.resolve.outputs.number }}
+          HEAD_SHA: ${{ needs.resolve.outputs.head }}
         run: |
-          if gh api --method DELETE "repos/${{ github.repository }}/issues/$NUMBER/labels/recheck"; then
-            echo "The recheck label is off again."
+          if [ -z "$NUMBER" ]; then
+            echo "This run resolved no pull request, so there is no judgement to record."
             exit 0
           fi
-          status=$(gh api "repos/${{ github.repository }}/issues/$NUMBER/labels" --jq '[.[].name] | join(",")')
-          echo "::warning::Could not remove the recheck label; the labels now read: $status"
+          jq -n --arg number "$NUMBER" --arg head "$HEAD_SHA" '{number: ($number | tonumber), head: $head}' \
+            > "$RUNNER_TEMP/judged.json"
+
+      # The attempt number is part of the name because a re-run is a second attempt at the same run, and artifacts are
+      # attached to the run rather than to the attempt. Reading them by name alone would take whichever attempt uploaded
+      # last, so the report on the first attempt would describe the second one's judgement — or, when the first attempt
+      # stopped before it uploaded, would find nothing at all and stay silent about a run that did judge something.
+      #
+      # `if-no-files-found: error` is what makes a run that judged something but recorded nothing fail here rather
+      # than disappear quietly. The `needs.resolve` half is the one case where no file is correct: a run that resolved no
+      # pull request has nothing to attribute, its failure is already reported above, and asking for a file that cannot
+      # exist would turn that into an error about artifact paths.
+      - uses: actions/upload-artifact@v7
+        if: always() && needs.resolve.outputs.number != ''
+        with:
+          name: judged-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/judged.json
+          retention-days: 1
+          if-no-files-found: error
