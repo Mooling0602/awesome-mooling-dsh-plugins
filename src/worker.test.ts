@@ -69,6 +69,7 @@ async function request(
   entries?: Record<string, unknown>,
   upstream?: string,
   stub: Stub = {},
+  options: { readonly headers?: Record<string, string>; readonly dev?: string } = {},
 ): Promise<{ response: Response; proxied: string[] }> {
   const proxied: string[] = []
   const original = globalThis.fetch
@@ -81,7 +82,9 @@ async function request(
     })
   }) as typeof globalThis.fetch
   try {
-    const response = await handle(new Request(url), env(entries, upstream))
+    const base = env(entries, upstream)
+    const bound: Env = options.dev === undefined ? base : { ...base, DEV_PROXY: options.dev }
+    const response = await handle(new Request(url, options.headers === undefined ? undefined : { headers: options.headers }), bound)
     return { response, proxied }
   } finally {
     globalThis.fetch = original
@@ -284,4 +287,123 @@ test('不存在的版本返回 404 而不是代理', async () => {
   const { response, proxied } = await request('https://reg.test/dsh-hint-shell/9.9.9')
   assert.equal(response.status, 404)
   assert.deepEqual(proxied, [])
+})
+
+/**
+ * Serve a Cache API stand-in for the grant tests.
+ *
+ * The worker keeps its grant in the edge cache rather than KV so that a client's whole dependency tree does not cost a
+ * KV read each, and Node has no such cache. This stands one up: entries live in the map for the duration of a callback,
+ * which is what lets a test spend a grant on a hosted request and then observe the redirect.
+ * @param run - the test body, receiving the cache it should use.
+ * @returns whatever the body returns.
+ */
+async function withCache<T>(run: () => Promise<T>): Promise<T> {
+  const store = new Map<string, Response>()
+  const holder = globalThis as { caches?: unknown }
+  const original = holder.caches
+  const match = async (request: Request | string | URL): Promise<Response | undefined> =>
+    store.get(new URL(String(request)).pathname)
+  const put = async (request: Request | string | URL, response: Response): Promise<void> => {
+    store.set(new URL(String(request)).pathname, response)
+  }
+  const standIn: unknown = { open: async () => ({ match, put }) }
+  holder.caches = standIn
+  try {
+    return await run()
+  } finally {
+    holder.caches = original
+  }
+}
+
+test('没有授权的客户端请求未收录包仍被拒绝', async () => {
+  await withCache(async () => {
+    const { response, proxied } = await request(
+      'https://reg.test/dsh-context',
+      { 'dsh-hint-shell': ENTRY, '__hosted__': ['dsh-hint-shell'] },
+      undefined,
+      {},
+      { headers: { 'cf-connecting-ip': '5.5.5.5' }, dev: '1' },
+    )
+    assert.equal(response.status, 404)
+    assert.deepEqual(proxied, [])
+  })
+})
+
+test('请求过托管包的客户端，未收录包被重定向到公共源', async () => {
+  await withCache(async () => {
+    const entries = { 'dsh-hint-shell': ENTRY, '__hosted__': ['dsh-hint-shell'] }
+    const headers = { 'cf-connecting-ip': '5.5.5.5' }
+    // The first request is the one pnpm makes: the named plugin, before any of its dependencies.
+    const hosted = await request('https://reg.test/dsh-hint-shell', entries, 'https://up.test', {}, { headers, dev: '1' })
+    assert.equal(hosted.response.status, 200)
+    const { response } = await request('https://reg.test/dsh-context', entries, 'https://up.test', {}, { headers, dev: '1' })
+    assert.equal(response.status, 302)
+    assert.equal(response.headers.get('location'), 'https://up.test/dsh-context')
+  })
+})
+
+test('重定向按客户端地址区分，未授予的地址不受影响', async () => {
+  await withCache(async () => {
+    const entries = { 'dsh-hint-shell': ENTRY, '__hosted__': ['dsh-hint-shell'] }
+    await request('https://reg.test/dsh-hint-shell', entries, 'https://up.test', {}, {
+      headers: { 'cf-connecting-ip': '5.5.5.5' }, dev: '1',
+    })
+    const other = await request('https://reg.test/dsh-context', entries, 'https://up.test', {}, {
+      headers: { 'cf-connecting-ip': '9.9.9.9' }, dev: '1',
+    })
+    assert.equal(other.response.status, 404)
+  })
+})
+
+test('没有客户端地址时不授予，即使已用过托管包', async () => {
+  await withCache(async () => {
+    const entries = { 'dsh-hint-shell': ENTRY, '__hosted__': ['dsh-hint-shell'] }
+    await request('https://reg.test/dsh-hint-shell', entries, 'https://up.test')
+    const { response } = await request('https://reg.test/dsh-context', entries, 'https://up.test')
+    assert.equal(response.status, 404)
+  })
+})
+
+test('重定向不带缓存头，避免把授权回给同一地址上的其他客户端', async () => {
+  await withCache(async () => {
+    const entries = { 'dsh-hint-shell': ENTRY, '__hosted__': ['dsh-hint-shell'] }
+    const headers = { 'cf-connecting-ip': '5.5.5.5' }
+    await request('https://reg.test/dsh-hint-shell', entries, 'https://up.test', {}, { headers, dev: '1' })
+    const { response } = await request('https://reg.test/dsh-context', entries, 'https://up.test', {}, { headers, dev: '1' })
+    assert.equal(response.headers.get('cache-control'), null)
+  })
+})
+
+test('授权过期后的拒绝说明是超时而不是包不存在', async () => {
+  await withCache(async () => {
+    const entries = { 'dsh-hint-shell': ENTRY, '__hosted__': ['dsh-hint-shell'] }
+    const headers = { 'cf-connecting-ip': '7.7.7.7' }
+    // A grant written by a hosted request, then read after the window it recorded has passed.
+    await request('https://reg.test/dsh-hint-shell', entries, 'https://up.test', {}, { headers, dev: '1' })
+    const cache = await caches.open('grant')
+    const key = new URL('https://grant.invalid/grant:7.7.7.7')
+    const stale = await cache.match(key)
+    assert.notEqual(stale, undefined)
+    await cache.put(key, new Response(String(Date.now() - 1000), { headers: { 'cache-control': 'max-age=3600' } }))
+    const { response } = await request('https://reg.test/dsh-context', entries, 'https://up.test', {}, { headers, dev: '1' })
+    assert.equal(response.status, 404)
+    const body = (await response.json()) as { error: string; hint: string }
+    assert.match(body.error, /longer than/)
+    assert.doesNotMatch(body.error, /not hosted here/)
+    assert.match(body.hint, /again/)
+  })
+})
+
+test('从未授权的客户端得到的是包不存在而不是超时', async () => {
+  await withCache(async () => {
+    const entries = { 'dsh-hint-shell': ENTRY, '__hosted__': ['dsh-hint-shell'] }
+    const { response } = await request(
+      'https://reg.test/dsh-context', entries, 'https://up.test', {}, { headers: { 'cf-connecting-ip': '6.6.6.6' }, dev: '1' },
+    )
+    assert.equal(response.status, 404)
+    const body = (await response.json()) as { error: string; hint?: string }
+    assert.match(body.error, /not hosted here/)
+    assert.equal(body.hint, undefined)
+  })
 })

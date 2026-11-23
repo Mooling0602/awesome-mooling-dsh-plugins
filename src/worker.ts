@@ -29,6 +29,14 @@ export interface Env {
   readonly REGISTRY: KVNamespace
   /** Upstream registry every non-hosted request is proxied to. */
   readonly UPSTREAM?: string
+  /**
+   * `'1'` only in a local `wrangler dev` reproduction, never in a deployed environment.
+   *
+   * A local run has no edge in front of it, so it sees no client address and every grant would look absent. Setting this
+   * lets the reproduction pass one in a header. It must never be deployed: a caller could then claim an address that
+   * another client holds a grant for.
+   */
+  readonly DEV_PROXY?: string
 }
 
 /** The registry this worker proxies to when it does not host a package. */
@@ -116,6 +124,138 @@ const DENIED_MAX_AGE_SECONDS = 60
  */
 function denied(name: string): Response {
   return json({ error: `not hosted here, and not a dependency of a hosted package: ${name}` }, 404, DENIED_MAX_AGE_SECONDS)
+}
+
+/**
+ * The refusal a client gets when it has gone quiet for longer than GRANT_TTL_SECONDS.
+ *
+ * It reads differently from `denied` on purpose. A client that reaches this point is usually in the middle of a working
+ * install that paused long enough to lose the grant, and the install reports the refusal as a missing package. Saying
+ * the name is not hosted would leave the user unable to tell a stall apart from a package that really is refused, so the
+ * message names the gap and asks for a retry.
+ * @param name - the package that was refused.
+ * @returns the refusal.
+ */
+function lapsed(name: string): Response {
+  return json(
+    {
+      error: `the request paused for longer than the ${String(GRANT_TTL_SECONDS)} second window this registry allows ` +
+        `between requests, so it could not be completed: ${name}`,
+      hint: 'run the operation again',
+    },
+    404,
+    DENIED_MAX_AGE_SECONDS,
+  )
+}
+
+/**
+ * How long a client keeps the right to resolve packages this worker does not host.
+ *
+ * Fifteen seconds of silence, renewed by every request that uses it. The grant is written when a client asks for a
+ * hosted package and renewed on each refused name that is forwarded, so what has to fit inside this window is the pause
+ * between two requests of one install, not the install itself.
+ *
+ * Measured against a cold install of a realistic profile: 712 requests over 15.6 seconds, whose longest pause between
+ * two requests was 3.7 seconds and whose median was under a millisecond. Fifteen seconds covers that pause four times
+ * over while staying far below the length of the install, so a client that stalls loses the grant quickly instead of
+ * keeping it.
+ *
+ * The window bounds how long an install leaves a right behind, not how much a client may resolve. Limiting volume needs
+ * a counter per client, which is a separate concern with its own storage cost and belongs with rate limiting.
+ */
+const GRANT_TTL_SECONDS = 15
+
+/** Prefix of the cache key marking a client as allowed to resolve non-hosted packages. */
+const GRANT_PREFIX = 'grant:'
+
+/**
+ * How long the record of a client survives, which is longer than the grant it carries.
+ *
+ * Keeping the entry after its grant ends is what lets a refusal say the install lapsed rather than implying the package
+ * does not exist. The value stored is the moment the grant stops, so the two states are read from one entry.
+ */
+const GRANT_MEMORY_SECONDS = 60 * 60
+
+/**
+ * What this client is currently allowed to do, and whether it used to be allowed.
+ *
+ * A client refused after a pause and one that never asked for a hosted package both end in a 404, and only the first is
+ * worth telling to retry, so the difference is kept and reported.
+ */
+type Grant = 'granted' | 'lapsed' | 'never'
+
+/**
+ * Whether this request comes from a client that has recently used a hosted package.
+ *
+ * The grant lives in the edge cache rather than KV. It is written on every hosted request and read on every refused one,
+ * which is exactly the traffic KV meters: a single install resolves a whole profile, so the refused reads alone would be
+ * dozens per install against a 100,000-a-day allowance. The cache has no such quota, and its eviction only costs a
+ * client one more hosted request before the next refusal is forwarded again.
+ * @param address - the client address, or null when the edge did not report one.
+ * @returns the state of this client's grant.
+ */
+async function grantOf(address: string | null): Promise<Grant> {
+  if (address === null) return 'never'
+  const cache = await caches.open('grant')
+  const hit = await cache.match(new URL(`https://grant.invalid/${GRANT_PREFIX}${address}`))
+  if (hit === undefined) return 'never'
+  const expires = Number(await hit.text())
+  return Number.isFinite(expires) && Date.now() < expires ? 'granted' : 'lapsed'
+}
+
+/**
+ * Remember that a client is using this domain, so its next refused dependency is forwarded instead of denied.
+ *
+ * The value written is the moment the grant stops rather than a flag, so a later read can tell a lapsed grant from a
+ * missing one. The entry is kept for GRANT_MEMORY_SECONDS so that distinction stays available after the grant ends.
+ * @param address - the client address, or null when the edge did not report one.
+ */
+async function remember(address: string | null): Promise<void> {
+  if (address === null) return
+  const cache = await caches.open('grant')
+  await cache.put(
+    new URL(`https://grant.invalid/${GRANT_PREFIX}${address}`),
+    new Response(String(Date.now() + GRANT_TTL_SECONDS * 1000), {
+      headers: { 'cache-control': `max-age=${String(GRANT_MEMORY_SECONDS)}` },
+    }),
+  )
+}
+
+/**
+ * The address a grant is keyed on.
+ *
+ * The address comes from Cloudflare's own header, which the edge sets rather than the caller, so a client cannot claim
+ * another's address. `wrangler dev` runs without that edge and fills the header with its own loopback address, which no
+ * grant would ever name, so a local reproduction may pass one instead when the deployment sets DEV_PROXY. That fallback
+ * must never be deployed: a caller could then claim an address another client holds a grant for.
+ * @param request - the incoming request.
+ * @param dev - whether the deployment opted into the local reproduction's header.
+ * @returns the address, or null when neither header is present.
+ */
+function clientAddress(request: Request, dev: boolean): string | null {
+  const address = dev
+    ? request.headers.get('x-dev-address') ?? request.headers.get('cf-connecting-ip')
+    : request.headers.get('cf-connecting-ip')
+  return address
+}
+
+/**
+ * Redirect a package this worker does not host to the public registry.
+ *
+ * A 302 rather than a proxy: pnpm follows it and fetches the tarball from the public registry directly, so this worker
+ * neither pays for the bytes nor stores anything. The metadata is what pins the client afterwards, because a lockfile
+ * written through a redirect records the public registry's tarball URL, not this domain's. One granted install is
+ * therefore enough for that dependency to stop asking this worker at all.
+ * @param request - the incoming request.
+ * @param upstream - registry base URL.
+ * @returns the redirect.
+ */
+function redirect(request: Request, upstream: string): Response {
+  const incoming = new URL(request.url)
+  const target = new URL(`${incoming.pathname}${incoming.search}`, upstream)
+  // No cache header: a redirect is only correct for a granted client, and caching it at the edge would serve it to
+  // everyone else behind the same address.
+  return new Response(null, { status: 302, headers: { location: target.href } })
 }
 
 /**
@@ -224,10 +364,26 @@ export async function handle(request: Request, env: Env): Promise<Response> {
     }
     const version = requestedVersion(found.name, parts.slice(found.consumed))
     if (!(await allowed(found.name, env.REGISTRY, upstream, hosts, own, [...hosted], version))) {
-      return denied(found.name)
+      // A client that installs a hosted plugin does so with a registry flag that replaces the registry for its whole
+      // dependency tree, so a name outside the hosted graph is expected here. It is forwarded only for a client that has
+      // just used a hosted package. See GRANT_PREFIX.
+      const address = clientAddress(request, env.DEV_PROXY === '1')
+      const state = await grantOf(address)
+      if (state === 'granted') {
+        // Renewing while forwarding is what keeps a grant alive for the length of an install. The hosted request that
+        // opened the install is the only hosted request it makes, so without this the grant would be a hard limit from
+        // the first request rather than a budget that the install's own progress extends.
+        await remember(address)
+        return redirect(request, upstream)
+      }
+      return state === 'lapsed' ? lapsed(found.name) : denied(found.name)
     }
     return proxy(request, upstream)
   }
+  // A request for a hosted package is what earns the right to resolve the ones this worker does not host. Renewing it
+  // here rather than only at install time is what keeps a client covered across the update checks that follow, each of
+  // which reads a hosted packument first.
+  await remember(clientAddress(request, env.DEV_PROXY === '1'))
   const decided = route(new URL(request.url), name => (name === found.name ? entry : undefined))
   switch (decided.kind) {
     case 'packument':
