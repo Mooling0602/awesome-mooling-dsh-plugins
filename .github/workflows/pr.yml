@@ -45,14 +45,22 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # Runs before anything is built, so a pull request that cannot be accepted fails in seconds instead of after a
-      # full registry and index build. It needs the merge base, which the default shallow checkout does not carry.
+      # full registry and index build.
       #
-      # `--base` is passed because a plugin submission may only target `main`; the check rejects one aimed elsewhere
+      # Both commits are named explicitly rather than diffed as `base...HEAD`. `checkout` puts the pull request's *merge*
+      # commit in `HEAD`, a shallow clone carries neither of its parents, and the `--depth=1` fetch below lands on a tip
+      # with no ancestry in common with that merge commit, so a three-dot range has no merge base to resolve and fails
+      # before reading a single file. Comparing the base commit and `HEAD` as two trees needs no shared history.
+      #
+      # `--target` is passed because a plugin submission may only target `main`; the check rejects one aimed elsewhere
       # rather than letting it through to a merge that could never publish.
       - name: Check the commit subject and the submitted metadata
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
-          node src/contrib/check.ts --range "origin/${{ github.base_ref }}...HEAD" --base "${{ github.base_ref }}"
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          node src/contrib/check.ts --base "$BASE_SHA" --head HEAD --target "$BASE_REF"
 
       # The registry data is built first because the index is read from these packuments and the worker imports the
       # index, so `pnpm check` cannot type-check the worker until both exist. This is the same order `registry.yml` uses

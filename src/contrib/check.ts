@@ -140,12 +140,18 @@ export function checkMetadata(path: string): string[] {
 
 /**
  * Read the files a diff touched.
- * @param range - the git range to diff.
+ *
+ * Two endpoints are compared directly, as `git diff base head`. The three-dot form `base...head` is not used: it needs a
+ * merge base, and a shallow CI checkout of a pull request's merge commit has none in common with a shallow fetch of the
+ * base branch, so it fails with `no merge base` before any file is read. Comparing the two trees works with no shared
+ * ancestry, which is exactly the situation a pull request run is in.
+ * @param base - the commit the pull request would merge into.
+ * @param head - the commit under review.
  * @returns one entry per file.
  * @throws when git cannot be run, which is a broken checkout rather than a rejected pull request.
  */
-export function changedFiles(range: string): Changed[] {
-  const output = execFileSync('git', ['diff', '--name-status', '--no-renames', range], { encoding: 'utf8' })
+export function changedFiles(base: string, head: string): Changed[] {
+  const output = execFileSync('git', ['diff', '--name-status', '--no-renames', base, head], { encoding: 'utf8' })
   return output
     .split('\n')
     .filter(line => line !== '')
@@ -156,12 +162,17 @@ export function changedFiles(range: string): Changed[] {
 }
 
 /**
- * Read the commit subjects a range carries.
- * @param range - the git range to read.
+ * Read the commit subjects a pull request carries.
+ *
+ * The subjects are read from the head's own history back to the base, which `git log base..head` expresses without
+ * needing a merge base: it walks what `head` reaches that `base` does not, and a shallow checkout satisfies that as long
+ * as both endpoints are present.
+ * @param base - the commit the pull request would merge into.
+ * @param head - the commit under review.
  * @returns every subject, oldest first.
  */
-export function subjectsOf(range: string): string[] {
-  const output = execFileSync('git', ['log', '--format=%s', range], { encoding: 'utf8' })
+export function subjectsOf(base: string, head: string): string[] {
+  const output = execFileSync('git', ['log', '--format=%s', `${base}..${head}`], { encoding: 'utf8' })
   return output.split('\n').filter(line => line !== '')
 }
 
@@ -218,14 +229,21 @@ function invokedDirectly(): boolean {
 }
 
 if (invokedDirectly()) {
-  const flag = process.argv.indexOf('--range')
-  const range = flag === -1 ? 'origin/main...HEAD' : process.argv[flag + 1] ?? 'origin/main...HEAD'
-  // The base branch is only known inside a pull request event; a local run has no target to check.
+  // The two commits under comparison. `--base` names where the pull request would merge, `--head` the commit under
+  // review; a local run compares against the merge base of `main` the way a person would, using the three-dot form that
+  // only works when the checkout has the history for it.
   const baseFlag = process.argv.indexOf('--base')
-  const base = baseFlag === -1 ? undefined : process.argv[baseFlag + 1]
-  const subjects = subjectsOf(range)
-  const changed = changedFiles(range)
-  const problems = check(subjects, changed, base)
+  const headFlag = process.argv.indexOf('--head')
+  const base = baseFlag === -1 ? null : process.argv[baseFlag + 1] ?? null
+  const head = headFlag === -1 ? 'HEAD' : process.argv[headFlag + 1] ?? 'HEAD'
+  // The branch a pull request targets is only known inside a pull request event; a local run has no target to check.
+  const refFlag = process.argv.indexOf('--target')
+  const target = refFlag === -1 ? undefined : process.argv[refFlag + 1]
+  // Without an explicit base, fall back to the merge base with `main`, which is what a local developer expects.
+  const from = base ?? execFileSync('git', ['merge-base', 'origin/main', head], { encoding: 'utf8' }).trim()
+  const subjects = subjectsOf(from, head)
+  const changed = changedFiles(from, head)
+  const problems = check(subjects, changed, target)
   if (problems.length > 0) {
     console.error('This pull request cannot be merged:\n')
     for (const problem of problems) console.error(`  ${problem}`)
