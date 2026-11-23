@@ -123,6 +123,8 @@ pnpm test            # 运行测试
 
 `README.md` 和 `README.zh.md` 由 CI 生成并提交，在本地它们只是产物而不是输入。仓库内的 git hook 会把这两个文件标记为 `skip-worktree`，让本地修改不出现在 `git status` 里，避免误提交或与拉取冲突。
 
+投稿的 pull request 不需要改动它们。这两个文件由 `plugins/` 生成，并在 `main` 上由 `readme.yml` 重写；要求 PR 自带重新生成的副本，等于让投稿者提供一份仓库在本地替他藏起来的产物，而 fork 也无法把它推回来。README 在合并之后再跟上即可。
+
 相关脚本在 `.githooks` 下：
 
 - `.githooks/generated-readme on`：隐藏本地修改（hook 在切换分支和拉取后自动执行）

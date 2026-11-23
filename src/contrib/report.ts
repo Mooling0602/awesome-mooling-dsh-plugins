@@ -60,11 +60,6 @@ const CHECKS: readonly { readonly name: string; readonly check: Bilingual; reado
     about: { en: 'dists/index.json lists every plugin', zh: 'dists/index.json 列出所有插件' },
   },
   {
-    name: 'Check the READMEs are up to date',
-    check: { en: 'READMEs', zh: 'README' },
-    about: { en: 'the generated files match the metadata', zh: '生成的文件与元数据一致' },
-  },
-  {
     name: 'Typecheck',
     check: { en: 'Types', zh: '类型' },
     about: { en: 'tsc accepts every source file', zh: 'tsc 接受所有源文件' },

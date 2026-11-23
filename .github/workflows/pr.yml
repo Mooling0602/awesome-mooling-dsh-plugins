@@ -91,12 +91,11 @@ jobs:
       - name: Build index
         run: ./build-index.sh
 
-      # The generated READMEs are committed files, so a branch that edited a plugin's metadata without regenerating them
-      # would land a repository whose README contradicts its own plugin list. `registry.yml` never checks this, because
-      # `readme.yml` fixes it after the fact, but a pull request should be rejected rather than silently corrected.
-      - name: Check the READMEs are up to date
-        run: node src/readme/build.ts --check
-
+      # The generated READMEs are not checked here. They are produced from `plugins/` by `readme.yml`, which runs on a
+      # push to `main` and commits the result, and the two files are flagged `skip-worktree` locally so a developer never
+      # has them in front of them. Requiring a pull request to carry a regenerated copy would ask its author to produce
+      # output that the repository hides from them locally and that CI rewrites after the merge anyway, and a fork cannot
+      # commit the result back. The README therefore catches up on `main` rather than holding up the submission.
       - name: Typecheck
         run: pnpm check
       - name: Test

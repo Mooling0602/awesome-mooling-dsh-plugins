@@ -123,6 +123,8 @@ The plugin name part is a plugin name linked to its source repository, and depen
 
 `README.md` and `README.zh.md` are generated and committed by CI, so locally they are an output rather than an input. The repository's git hooks flag both files with `skip-worktree` so local edits stay out of `git status`, which keeps them from being committed by accident or from blocking a pull.
 
+A pull request is not asked to carry them. Because they are generated from `plugins/` and rewritten on `main` by `readme.yml`, requiring a regenerated copy in a pull request would ask its author for output the repository hides locally and a fork cannot push back; the README catches up after the merge instead.
+
 The scripts live under `.githooks`:
 
 - `.githooks/generated-readme on`: hide local edits (the hooks do this after a checkout or a pull)

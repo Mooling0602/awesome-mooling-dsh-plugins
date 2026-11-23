@@ -12,7 +12,6 @@ const PASSING: Job[] = [
       { name: 'Check the commit subject and the submitted metadata', conclusion: 'success' },
       { name: 'Build registry data', conclusion: 'success' },
       { name: 'Build index', conclusion: 'success' },
-      { name: 'Check the READMEs are up to date', conclusion: 'success' },
       { name: 'Typecheck', conclusion: 'success' },
       { name: 'Test', conclusion: 'success' },
       { name: 'Verify the worker bundles', conclusion: 'success' },
@@ -70,10 +69,10 @@ test('resultOf writes every result in both languages', () => {
 
 test('rowsOf returns one row per check in workflow order', () => {
   const rows = rowsOf(PASSING)
-  assert.equal(rows.length, 8)
+  assert.equal(rows.length, 7)
   assert.deepEqual(
     rows.map(row => row.check.en),
-    ['Dependencies', 'Submission', 'Registry', 'Index', 'READMEs', 'Types', 'Tests', 'Bundle'],
+    ['Dependencies', 'Submission', 'Registry', 'Index', 'Types', 'Tests', 'Bundle'],
   )
 })
 
@@ -81,7 +80,7 @@ test('rowsOf returns every check name in both languages', () => {
   const rows = rowsOf(PASSING)
   assert.deepEqual(
     rows.map(row => row.check.zh),
-    ['依赖', '投稿内容', '注册表数据', '索引', 'README', '类型', '测试', '打包'],
+    ['依赖', '投稿内容', '注册表数据', '索引', '类型', '测试', '打包'],
   )
   for (const row of rows) {
     assert.ok(row.about.en.length > 0, row.check.en)
@@ -98,7 +97,7 @@ test('rowsOf reports a check the run never reached as not run', () => {
 test('rowsOf reports every check as not run when the run has no jobs', () => {
   assert.deepEqual(
     rowsOf([]).map(row => row.result.en),
-    Array.from({ length: 8 }, () => '⚪ Not run'),
+    Array.from({ length: 7 }, () => '⚪ Not run'),
   )
 })
 
@@ -108,7 +107,7 @@ test('rowsOf merges steps from more than one job', () => {
     { steps: [{ name: 'Test', conclusion: 'failure' }] },
   ])
   assert.equal(rows[0]?.result.en, '✅ Passed')
-  assert.equal(rows[6]?.result.en, '❌ Failed')
+  assert.equal(rows[5]?.result.en, '❌ Failed')
 })
 
 test('render starts with the marker so a later run can find the comment', () => {
@@ -138,7 +137,6 @@ test('render reports a draft failure in both languages and points at the log', (
         { name: 'Check the commit subject and the submitted metadata', conclusion: 'failure' },
         { name: 'Build registry data', conclusion: 'skipped' },
         { name: 'Build index', conclusion: 'skipped' },
-        { name: 'Check the READMEs are up to date', conclusion: 'skipped' },
         { name: 'Typecheck', conclusion: 'skipped' },
         { name: 'Test', conclusion: 'skipped' },
         { name: 'Verify the worker bundles', conclusion: 'skipped' },
