@@ -219,7 +219,8 @@ export function subjectsOf(base: string, head: string): string[] {
  *
  * A plugin submission changes what the registry publishes, and the registry is built from `main`. A submission aimed
  * anywhere else can never be merged into what it changes, so the answer is a rejection rather than a rule to reason
- * about: a submission targets `main` or it is closed, whether or not it is a draft.
+ * about: a submission targets `main` or it is refused, whether or not it is a draft. Refusing here only fails the check;
+ * it does not close the pull request, which the maintainer decides.
  * @param branch - the base branch the pull request targets.
  * @returns the problems found, empty when the branch is the right one.
  */
@@ -227,7 +228,7 @@ export function checkBase(branch: string): string[] {
   if (branch === 'main') return []
   return [
     `a plugin submission must target "main", but this pull request targets ${JSON.stringify(branch)}.`,
-    'Reopen it against "main", or retarget it before submitting again.',
+    'Retarget it to "main", or open a new pull request against "main".',
   ]
 }
 

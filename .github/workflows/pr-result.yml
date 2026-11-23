@@ -4,8 +4,13 @@ name: PR result
 #
 # This is a separate workflow rather than a step inside `pr.yml` so that reporting is never part of judging. A comment is
 # written from outside the run it describes: it reads the conclusions GitHub assigned to the check's steps and renders
-# them, and it closes a submission that targets another branch. Keeping that in its own workflow means a failure to
-# comment cannot affect a failure to check, and the checks themselves stay read-only.
+# them, and it closes nothing. Keeping that in its own workflow means a failure to comment cannot affect a failure to
+# check, and the checks themselves stay read-only.
+#
+# Every run that reached the checks is reported, pass or fail, and reported by updating the same comment. A failure
+# therefore replaces an older "all checks passed" rather than leaving it to contradict the red check beside it. Nothing
+# is closed here: a pull request that may not be merged is one whose required status checks are unmet, which GitHub
+# enforces on its own, and closing is the maintainer's decision.
 #
 # `pr.yml` triggers on `pull_request_target`, whose name is what the `workflow_run.event` filter below matches. That
 # trigger already runs in the base repository's context with a write token, so the comment could be posted from there;
@@ -87,55 +92,23 @@ jobs:
           fi
           echo "number=$number" >> "$GITHUB_OUTPUT"
 
-      - name: Check whether the pull request is open and a draft
-        id: state
-        if: steps.pr.outputs.number != ''
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh api "repos/${{ github.repository }}/pulls/${{ steps.pr.outputs.number }}" > "$RUNNER_TEMP/pr.json"
-          echo "state=$(jq -r .state "$RUNNER_TEMP/pr.json")" >> "$GITHUB_OUTPUT"
-          echo "draft=$(jq -r .draft "$RUNNER_TEMP/pr.json")" >> "$GITHUB_OUTPUT"
-          echo "base=$(jq -r .base.ref "$RUNNER_TEMP/pr.json")" >> "$GITHUB_OUTPUT"
-
-      # A plugin submission may only target `main`, because that is the branch the registry is built from. A draft is no
-      # exception: the rule is about where the change could ever land, not about whether its author is finished.
-      #
-      # Closing is decided from the same marker the checker used — a pull request carrying a `plugin.yml` — so an ordinary
-      # pull request aimed at another branch is left alone. The files are read from the API rather than from the run, so a
-      # fork cannot suppress this by writing to its own output.
-      #
-      # Nothing is said when the pull request is closed. A closed pull request is no longer waiting on anyone, and every
-      # message the repository could add would be a notification about work that is already over; the closure is the
-      # whole response here, exactly as it is for a failing run on a ready pull request.
-      - name: Close a submission that targets another branch
-        id: close
-        if: steps.pr.outputs.number != '' && steps.state.outputs.state == 'open' && steps.state.outputs.base != 'main'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          files=$(gh api "repos/${{ github.repository }}/pulls/${{ steps.pr.outputs.number }}/files" --paginate --jq '.[].filename')
-          if ! printf '%s\n' "$files" | grep -q 'plugin\.yml$'; then
-            echo "This pull request carries no plugin.yml; leaving it open."
-            exit 0
-          fi
-          gh pr close "${{ steps.pr.outputs.number }}" --repo "${{ github.repository }}"
-          echo "closed=true" >> "$GITHUB_OUTPUT"
+      # Nothing here closes a pull request, including one that targets another branch. Whether a submission may be merged
+      # is enforced by the repository's required status checks, which a failing run leaves unmet, and closing is a decision
+      # the maintainer makes by hand. That keeps this workflow to the one thing it is good at — saying what a run found —
+      # and leaves a wrongly targeted pull request open long enough to be read and explained rather than silently shut.
 
       - name: Render the comment
         id: body
         if: steps.pr.outputs.number != ''
         env:
           CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-          DRAFT: ${{ steps.state.outputs.draft }}
         run: |
           node src/contrib/report.ts \
             --jobs "$RUNNER_TEMP/jobs.json" \
-            --conclusion "$CONCLUSION" \
-            --draft "${DRAFT:-false}" > "$RUNNER_TEMP/comment.md"
+            --conclusion "$CONCLUSION" > "$RUNNER_TEMP/comment.md"
           if [ ! -s "$RUNNER_TEMP/comment.md" ]; then
-            # A failing run on a ready pull request gets no comment: that pull request is closed instead, and the
-            # closure is the whole response.
+            # A run with no verdict — cancelled, skipped, stale — says nothing. There is no result to describe, and a
+            # newer run will report instead.
             echo "post=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -147,11 +120,10 @@ jobs:
       # only comment this token posts.
       #
       # A closed pull request is skipped, and the state is read again here rather than reused from the earlier step: the
-      # pull request may have been closed since, including by the step above, and a stale answer would post a comment on
-      # something that is already over. The re-read is what makes "closed means no message" hold for every closure, not
-      # only the one this workflow performs.
+      # maintainer may have closed it in the meantime, and a stale answer would post a comment on something that is
+      # already over.
       - name: Post the comment
-        if: steps.body.outputs.post == 'true' && steps.close.outputs.closed != 'true'
+        if: steps.body.outputs.post == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ steps.pr.outputs.number }}

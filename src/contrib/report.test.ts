@@ -20,29 +20,22 @@ const PASSING: Job[] = [
 ]
 
 test('shouldPost reports a passing run', () => {
-  assert.equal(shouldPost('success', false), true)
-  assert.equal(shouldPost('success', true), true)
+  assert.equal(shouldPost('success'), true)
 })
 
-test('shouldPost stays silent when a ready pull request fails', () => {
-  assert.equal(shouldPost('failure', false), false)
+test('shouldPost reports a failing run, so the stale pass is replaced rather than left standing', () => {
+  assert.equal(shouldPost('failure'), true)
 })
 
-test('shouldPost reports a failing draft, where a failure is work in progress', () => {
-  assert.equal(shouldPost('failure', true), true)
+test('shouldPost reports every other failure kind too', () => {
+  for (const conclusion of ['timed_out', 'startup_failure', 'action_required']) {
+    assert.equal(shouldPost(conclusion), true, conclusion)
+  }
 })
 
 test('shouldPost stays silent for a run with no verdict', () => {
   for (const conclusion of ['cancelled', 'skipped', 'stale']) {
-    assert.equal(shouldPost(conclusion, false), false, conclusion)
-    assert.equal(shouldPost(conclusion, true), false, conclusion)
-  }
-})
-
-test('shouldPost treats another failure kind on a ready pull request as silent', () => {
-  for (const conclusion of ['timed_out', 'startup_failure', 'action_required']) {
-    assert.equal(shouldPost(conclusion, false), false, conclusion)
-    assert.equal(shouldPost(conclusion, true), true, conclusion)
+    assert.equal(shouldPost(conclusion), false, conclusion)
   }
 })
 
@@ -129,7 +122,7 @@ test('render renders every row as a bilingual table row', () => {
   assert.match(body, /^\| Bundle \/ 打包 \| ✅ Passed \/ ✅ 通过 \|/mu)
 })
 
-test('render reports a draft failure in both languages and points at the log', () => {
+test('render reports a failure in both languages and points at the log', () => {
   const failing: Job[] = [
     {
       steps: [
@@ -164,10 +157,11 @@ test('render leaves no unsubstituted placeholder', () => {
   }
 })
 
-test('render no longer promises a draft-specific explanation', () => {
-  // The draft case is the only one that reaches `render` with a failure, so it needs no branch of its own.
+test('the comment makes no promise about the pull request being closed', () => {
+  // Nothing closes a pull request any more: a failure leaves it open and fixable, and the comment says what broke.
   const body = render({ conclusion: 'failure', jobs: PASSING })
   assert.doesNotMatch(body, /is a draft/u)
+  assert.doesNotMatch(body, /closed|关闭/iu)
 })
 
 test('the comment says the same thing in both languages', () => {
@@ -187,15 +181,11 @@ test('the silent branch keeps stdout empty so the caller can treat it as nothing
   const { execFile } = await import('node:child_process')
   const { promisify } = await import('node:util')
   const run = promisify(execFile)
-  for (const [conclusion, draft] of [
-    ['failure', 'false'],
-    ['cancelled', 'false'],
-    ['skipped', 'true'],
-  ] as const) {
-    const { stdout } = await run(process.execPath, ['--experimental-strip-types', 'src/contrib/report.ts', '--jobs', '/dev/null', '--conclusion', conclusion, '--draft', draft], {
+  for (const conclusion of ['cancelled', 'skipped', 'stale']) {
+    const { stdout } = await run(process.execPath, ['--experimental-strip-types', 'src/contrib/report.ts', '--jobs', '/dev/null', '--conclusion', conclusion], {
       cwd: new URL('../..', import.meta.url).pathname,
     })
-    assert.equal(stdout, '', `${conclusion}/${draft}`)
+    assert.equal(stdout, '', conclusion)
   }
 })
 

@@ -37,8 +37,8 @@ run-name: "${{ github.event.issue.number && format('PR #{0}', github.event.issue
 # decorative: the checked-out tree is the base commit, which supplies every file that gets *executed*, and the pull
 # request contributes only `plugins/`, which is read as data. Nothing from the head commit is imported, sourced, or run.
 #
-# Every pull request runs, including drafts, because a draft aimed at another branch still has to be seen before it can be
-# closed, and a draft that fails has to be reported to its author so they can fix it before marking it ready.
+# Every pull request runs, including drafts, because a draft has to be reported to its author so they can fix it before
+# marking it ready, and because a submission aimed at another branch still has to be seen in order to be refused.
 #
 # `/recheck` in a comment runs the same job again, on the same pull request, without the contributor needing to push or
 # close and reopen. It exists because a run is judged by the rules on `main`: when a rule changes, or when a run failed for

@@ -7,18 +7,15 @@
  * and this only reads conclusions. That keeps the privileged workflow which posts the comment free of attacker-written
  * text.
  *
- * Whether a run gets a comment at all is {@link shouldPost}, and the answer is deliberately narrow:
- *
- * - A passing run is reported, because that is the signal a maintainer acts on.
- * - A failing run is reported only while the pull request is a draft, where a failure is expected work in progress.
- * - A failing run on a ready pull request is not reported. Such a pull request is closed rather than corrected, and the
- *   closure is the whole response; a comment explaining how to fix something that is already closed is noise.
+ * Whether a run gets a comment at all is {@link shouldPost}. Every run that reached the checks is reported, pass or fail,
+ * because the comment is what tells a contributor what broke and it is updated in place: leaving an older "all checks
+ * passed" in place while the checks are red would contradict the checks GitHub shows beside it.
  *
  * The rows are the checks `pr.yml` runs, in the order it runs them. A step that never started reports as not run, so a
  * run that stopped early still produces a complete table.
  *
  * ```sh
- * node src/contrib/report.ts --jobs jobs.json --conclusion success --draft false
+ * node src/contrib/report.ts --jobs jobs.json --conclusion success
  * ```
  */
 import { readFileSync } from 'node:fs'
@@ -121,16 +118,20 @@ export interface Report {
 
 /**
  * Decide whether a run gets a comment.
+ *
+ * Every run that reached the checks gets one, whatever its conclusion. A failing run used to be reported only on a draft,
+ * on the reasoning that a failure on a ready pull request closed it and the closure was the whole response. Nothing
+ * closes a pull request now: whether it may be merged is enforced by the repository's required status checks, so a failing
+ * run leaves the pull request open and fixable, and the comment is the only thing that tells its author what broke. A
+ * stale "all checks passed" comment sitting next to a red check is worse than no comment at all, and the comment is
+ * updated in place, so reporting a failure replaces that stale text rather than adding noise.
  * @param conclusion - the run's overall conclusion.
- * @param draft - whether the pull request is a draft at the time the comment would be written.
  * @returns true when the run should be reported, false when silence is the right response.
  */
-export function shouldPost(conclusion: string, draft: boolean): boolean {
-  if (conclusion === 'success') return true
-  if (NO_VERDICT.has(conclusion)) return false
-  // Everything else is a failure of some kind: `failure`, `timed_out`, `startup_failure`, `action_required`. On a draft
-  // that is work in progress worth showing; on a ready pull request it closes the pull request and needs no comment.
-  return draft
+export function shouldPost(conclusion: string): boolean {
+  // A cancelled run means a newer push superseded it and that newer run will report instead, and a skipped or stale run
+  // never reached the checks at all: there is no verdict in either, so a table of them would describe nothing.
+  return !NO_VERDICT.has(conclusion)
 }
 
 /**
@@ -242,15 +243,14 @@ export function jobsOf(text: string): Job[] {
 if (invokedDirectly()) {
   const path = arg('--jobs', '')
   if (path === '') {
-    console.error('usage: node src/contrib/report.ts --jobs <jobs.json> [--conclusion <s>] [--draft <bool>]')
+    console.error('usage: node src/contrib/report.ts --jobs <jobs.json> [--conclusion <s>]')
     process.exit(2)
   }
   const conclusion = arg('--conclusion', 'failure')
-  const draft = arg('--draft', 'false') === 'true'
-  if (!shouldPost(conclusion, draft)) {
+  if (!shouldPost(conclusion)) {
     // Nothing is written to stdout, so the caller can treat an empty file as "say nothing". The reason goes to stderr,
     // which the workflow shows in the run log without ever becoming part of the comment.
-    console.error(`Nothing to report for a ${conclusion} run on a ${draft ? 'draft' : 'ready'} pull request.`)
+    console.error(`Nothing to report for a ${conclusion} run.`)
     process.exit(0)
   }
   process.stdout.write(render({ conclusion, jobs: jobsOf(readFileSync(path, 'utf8')) }))
