@@ -52,6 +52,11 @@ jobs:
       # with no ancestry in common with that merge commit, so a three-dot range has no merge base to resolve and fails
       # before reading a single file. Comparing the base commit and `HEAD` as two trees needs no shared history.
       #
+      # The checker is run from the base commit's own tree, not from the checked-out one. `HEAD` is the merge commit, so
+      # its `src/contrib/check.ts` is whatever the pull request supplied: a submission that rewrote the checker would be
+      # judged by the checker it replaced. Unpacking the base commit into a temporary directory means the rules that apply
+      # are always the ones on the base branch, whatever the pull request contains.
+      #
       # `--target` is passed because a plugin submission may only target `main`; the check rejects one aimed elsewhere
       # rather than letting it through to a merge that could never publish.
       - name: Check the commit subject and the submitted metadata
@@ -60,7 +65,9 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
-          node src/contrib/check.ts --base "$BASE_SHA" --head HEAD --target "$BASE_REF"
+          mkdir -p "$RUNNER_TEMP/checker"
+          git archive "$BASE_SHA" | tar -x -C "$RUNNER_TEMP/checker"
+          node "$RUNNER_TEMP/checker/src/contrib/check.ts" --base "$BASE_SHA" --head HEAD --target "$BASE_REF"
 
       # The registry data is built first because the index is read from these packuments and the worker imports the
       # index, so `pnpm check` cannot type-check the worker until both exist. This is the same order `registry.yml` uses
