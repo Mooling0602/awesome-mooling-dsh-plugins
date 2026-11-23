@@ -147,6 +147,16 @@ To edit a README by hand, run `off` first, make the change, commit and push, the
 
 `skip-worktree` has one limitation worth knowing: a flagged file cannot be staged at all, not even with `git add -f`, because the flag lives in the index rather than in an ignore rule. Editing one without running `off` does not lose the change, but the hook warns about it and `git status` will not show it.
 
+The flag also stops a rebase. `git rebase` refuses to detach with "Please commit your changes or stash them before you switch branches", and neither `--autostash` nor stashing anything else clears it, because the flag makes Git treat the two files as permanently modified rather than as pending work. Clear the flag for the rebase and put it back afterwards:
+
+```sh
+git update-index --no-skip-worktree README.md README.zh.md
+git rebase origin/main
+git update-index --skip-worktree README.md README.zh.md
+```
+
+Checking the state back with `git ls-files -v | grep '^S'` should list both files once the rebase is done.
+
 CI does not need any of this, so the workflow sets `SKIP_README_WORKTREE=1` to keep the hooks out of the way.
 
 ## Contributing

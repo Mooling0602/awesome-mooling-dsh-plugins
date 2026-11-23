@@ -147,6 +147,16 @@ pnpm test            # 运行测试
 
 `skip-worktree` 有一个必须注意的限制：被标记的文件无法被 `git add`，加 `-f` 也一样，因为它不是忽略规则而是索引里的标记。直接改了却忘了 `off`，修改不会丢，但 hook 会提示你，`git status` 也看不到它。
 
+这个标记还会挡住 rebase。`git rebase` 会以「Please commit your changes or stash them before you switch branches」拒绝切换分支，而且 `--autostash` 和 stash 其他改动都不管用，因为标记让 Git 把那两个文件当成永远处于修改状态，而不是当作待处理的工作区改动。做法是临时清掉标记，rebase 完再恢复：
+
+```sh
+git update-index --no-skip-worktree README.md README.zh.md
+git rebase origin/main
+git update-index --skip-worktree README.md README.zh.md
+```
+
+完成后用 `git ls-files -v | grep '^S'` 确认两个文件都已恢复标记。
+
 CI 环境下不需要这套机制，工作流会通过 `SKIP_README_WORKTREE=1` 让它跳过。
 
 ## 贡献
