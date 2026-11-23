@@ -160,7 +160,20 @@ PRs to this repository are welcome! Before creating a fork and opening a PR, you
 
 > Opening the pull request as a draft is not required, and marking it ready is what makes it mergeable once the checks pass. Either way the pull request gets exactly one comment, updated in place on every run: it says which checks passed and which failed. A failing check does not close the pull request — fix what the comment names and the next run replaces it.
 
-> Comment exactly `/recheck` on your pull request to run the checks again against whatever `main` says today. The comment must be exactly `/recheck` — a sentence mentioning it does not count — and it works for anyone who can comment, including a contributor whose pull request comes from a fork. It reports its result in the same comment as any other run. A comment cannot clear the required check that blocks merging, because that check belongs to the run GitHub starts against your pull request's own head; a maintainer who adds the `recheck` label produces exactly that, and the label removes itself once the run has answered it.
+### Asking for the checks to run again
+
+A run is judged by the rules on `main`, so when a rule changes, or when a run failed for a reason that was not your fault, your pull request is stuck until something moves its branch. There are two ways to ask for another run, and they differ in one thing that matters:
+
+| How | Who can do it | Runs the checks | Clears the merge block |
+| --- | --- | --- | --- |
+| Comment exactly `/recheck` | Anyone who can comment | Yes | No |
+| Add the `recheck` label | A maintainer, who has write access | Yes | Yes |
+
+**The comment is yours to use.** It must be exactly `/recheck`: a sentence mentioning it does not count, and neither does `/RECHECK`, because the trigger is a whole-body comparison with no room to trim or fold case. It works from a fork, and its result lands in the same comment as every other run. What it cannot do is clear the required check that blocks merging. That check belongs to the run GitHub starts against your pull request's own head commit, and a comment says nothing about your head: the run it starts checks out `main` and reports against `main`. So the comment is a real re-run, and an honest answer to "is my submission fine now?" — it just does not by itself make the merge button work.
+
+**The label is what makes the merge button work.** A `labeled` event under `pull_request_target` carries your pull request's head, so the run it starts creates its `Check` on that head and replaces the red one. Ask a maintainer if you need it. The label takes itself back off once the run has answered it, including after a failure, which is what lets it be used again.
+
+Neither way exists without the other: the comment is the only one a contributor without write access can use, and the label is the only one that unblocks a pull request from a fork, whose branch does not exist in this repository.
 
 > Once a pull request is closed, this repository adds no further comment to it. Whatever the last run found is already in its comment, and that comment is not edited after the closure.
 
