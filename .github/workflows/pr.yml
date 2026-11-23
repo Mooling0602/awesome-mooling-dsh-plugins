@@ -52,15 +52,19 @@ jobs:
       # with no ancestry in common with that merge commit, so a three-dot range has no merge base to resolve and fails
       # before reading a single file. Comparing the base commit and `HEAD` as two trees needs no shared history.
       #
-      # The checker is run from the base commit's own tree, not from the checked-out one. `HEAD` is the merge commit, so
-      # its `src/contrib/check.ts` is whatever the pull request supplied: a submission that rewrote the checker would be
-      # judged by the checker it replaced. Unpacking the base commit into a subdirectory of the workspace means the rules
-      # that apply are always the ones on the base branch, whatever the pull request contains.
+      # The checker is taken from `main` as it stands when the run starts, not from the checkout and not from the commit
+      # the pull request was opened against.
       #
-      # The unpacked tree sits inside the workspace rather than in `$RUNNER_TEMP`: the checker shells out to `git`, and it
-      # reads the submitted `plugin.yml` through a path relative to the current directory, so it has to run where the
-      # checkout is. It is added to `.git/info/exclude` first, because otherwise the copy of the repository would show up
-      # as added files and every submission would look like it touched the whole tree.
+      # A `pull_request` run executes the workflow file carried by the merge commit, and that merge commit is built from
+      # the base commit the pull request was opened against. A pull request opened before a rule changed therefore keeps
+      # being judged by the rule that existed then, however many times it is re-run, until its branch is updated. Reading
+      # the checker from `main` at run time means the rule that applies is always the current one.
+      #
+      # The tree is unpacked into the workspace rather than a temporary directory because the checker shells out to `git`,
+      # so it has to run somewhere `git` sees the checkout, and it resolves packages such as `yaml` from the installed
+      # `node_modules`, which it finds by walking up from its own directory. It is added to `.git/info/exclude` first:
+      # otherwise the unpacked copy of the repository would count as added files and every submission would look like it
+      # touched the whole tree.
       #
       # `--target` is passed because a plugin submission may only target `main`; the check rejects one aimed elsewhere
       # rather than letting it through to a merge that could never publish.
@@ -70,9 +74,12 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git fetch --no-tags --depth=1 origin main
+          RULE_SHA=$(git rev-parse FETCH_HEAD)
+          echo "checking with the rules at $RULE_SHA"
           echo '.checker/' >> .git/info/exclude
           mkdir -p .checker
-          git archive "$BASE_SHA" | tar -x -C .checker
+          git archive "$RULE_SHA" | tar -x -C .checker
           node .checker/src/contrib/check.ts --base "$BASE_SHA" --head HEAD --target "$BASE_REF"
 
       # The registry data is built first because the index is read from these packuments and the worker imports the

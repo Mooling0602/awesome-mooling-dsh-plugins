@@ -25,7 +25,6 @@
  * ```
  */
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
 import { checkPluginLocation, inShard, parsePluginYml, shardOf } from '../metadata.ts'
 
 /** A plugin metadata path: the shard directory, the plugin directory, and the file itself. */
@@ -117,17 +116,22 @@ export function checkDiff(changed: readonly Changed[]): string[] {
 
 /**
  * Check one metadata file against the rules the registry build applies.
+ *
+ * The file is read from the commit under review with `git show`, not from the working tree. A working tree carries
+ * whichever files happen to be checked out, so reading from it would tie the answer to how the checkout was prepared;
+ * naming the commit and the path means the content is always the one being judged.
  * @param path - repository-relative path of the file to read.
+ * @param commit - the commit to read it from.
  * @returns the problems found, empty when the file is valid.
  */
-export function checkMetadata(path: string): string[] {
+export function checkMetadata(path: string, commit = 'HEAD'): string[] {
   const match = METADATA.exec(path)
   if (match?.groups === undefined) return [`${path} is not a plugin metadata file`]
   let text: string
   try {
-    text = readFileSync(path, 'utf8')
-  } catch (error) {
-    return [`${path} cannot be read: ${error instanceof Error ? error.message : String(error)}`]
+    text = execFileSync('git', ['show', `${commit}:${path}`], { encoding: 'utf8' })
+  } catch {
+    return [`${path} cannot be read from ${commit}`]
   }
   try {
     const parsed = parsePluginYml(text, path)
@@ -198,9 +202,15 @@ export function checkBase(branch: string): string[] {
  * @param subjects - the commit subjects it carries.
  * @param changed - the files it touches.
  * @param branch - the base branch it targets, when known.
+ * @param head - the commit under review, where a submitted file is read from.
  * @returns the problems found, empty when it passes.
  */
-export function check(subjects: readonly string[], changed: readonly Changed[], branch?: string): string[] {
+export function check(
+  subjects: readonly string[],
+  changed: readonly Changed[],
+  branch?: string,
+  head = 'HEAD',
+): string[] {
   const problems: string[] = []
   if (subjects.length === 0) problems.push('the pull request carries no commits')
   for (const subject of subjects) {
@@ -217,7 +227,7 @@ export function check(subjects: readonly string[], changed: readonly Changed[], 
   const shape = checkDiff(changed)
   problems.push(...shape)
   // Only a well-shaped diff names a file worth reading; a rejected shape already explained itself.
-  if (shape.length === 0 && changed[0] !== undefined) problems.push(...checkMetadata(changed[0].path))
+  if (shape.length === 0 && changed[0] !== undefined) problems.push(...checkMetadata(changed[0].path, head))
   return problems
 }
 
@@ -229,9 +239,8 @@ function invokedDirectly(): boolean {
 }
 
 if (invokedDirectly()) {
-  // The two commits under comparison. `--base` names where the pull request would merge, `--head` the commit under
-  // review; a local run compares against the merge base of `main` the way a person would, using the three-dot form that
-  // only works when the checkout has the history for it.
+  // The two commits under comparison. `--base` names where the pull request would merge and `--head` the commit under
+  // review; without them a local run falls back to the merge base with `main`, which is what a developer expects.
   const baseFlag = process.argv.indexOf('--base')
   const headFlag = process.argv.indexOf('--head')
   const base = baseFlag === -1 ? null : process.argv[baseFlag + 1] ?? null
@@ -239,11 +248,10 @@ if (invokedDirectly()) {
   // The branch a pull request targets is only known inside a pull request event; a local run has no target to check.
   const refFlag = process.argv.indexOf('--target')
   const target = refFlag === -1 ? undefined : process.argv[refFlag + 1]
-  // Without an explicit base, fall back to the merge base with `main`, which is what a local developer expects.
   const from = base ?? execFileSync('git', ['merge-base', 'origin/main', head], { encoding: 'utf8' }).trim()
   const subjects = subjectsOf(from, head)
   const changed = changedFiles(from, head)
-  const problems = check(subjects, changed, target)
+  const problems = check(subjects, changed, target, head)
   if (problems.length > 0) {
     console.error('This pull request cannot be merged:\n')
     for (const problem of problems) console.error(`  ${problem}`)

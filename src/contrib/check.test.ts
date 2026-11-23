@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -25,11 +26,26 @@ dispatch-type: tarball
  * @param text - the file contents.
  * @returns the temporary root, to be passed to {@link removeTree}.
  */
+/**
+ * Create a temporary git repository holding one file, and return its path.
+ *
+ * The metadata check reads the submitted file out of a commit rather than off the disk, so a fixture has to be a real
+ * repository with a real commit: a plain directory would only prove that `git` fails when there is no history.
+ * @param path - repository-relative path of the file.
+ * @param text - the file's contents.
+ * @returns the temporary root, committed.
+ */
 function treeWith(path: string, text: string): string {
   const root = mkdtempSync(join(tmpdir(), 'contrib-check-'))
   const full = join(root, path)
   mkdirSync(join(full, '..'), { recursive: true })
   writeFileSync(full, text)
+  const run = (args: string[]): void => {
+    execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: 'pipe' })
+  }
+  run(['init', '--quiet', '--initial-branch', 'main'])
+  run(['-c', 'user.email=test@example.com', '-c', 'user.name=test', 'add', '--all'])
+  run(['-c', 'user.email=test@example.com', '-c', 'user.name=test', 'commit', '--quiet', '--message', 'fixture'])
   return root
 }
 
