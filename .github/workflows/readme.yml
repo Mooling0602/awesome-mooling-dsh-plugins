@@ -10,8 +10,9 @@ name: README
 #
 # The commit is created through the GraphQL API rather than `git commit` plus `git push`, because GitHub signs commits
 # made through that mutation on the server and marks them verified. A commit made with `git` would carry the right
-# author but no signature. Commits created with the workflow's own GITHUB_TOKEN do not start a new workflow run, so this
-# cannot loop, and the README files are not a watched path either.
+# author but no signature. This commit does start a new workflow run, unlike one made with `GITHUB_TOKEN`, so the `paths`
+# filter above is what keeps this from looping: a README commit touches only the two generated files, which are not
+# watched.
 on:
   push:
     branches: [main]
@@ -43,6 +44,15 @@ jobs:
       # `git add` refuse the path, which is exactly what this job needs to do.
       - run: echo 'SKIP_README_WORKTREE=1' >> "$GITHUB_ENV"
 
+      # The commit below must bypass the "Protect main" ruleset, which requires a pull request. `GITHUB_TOKEN` is the
+      # `github-actions` app, and that app is not on the ruleset's bypass list, so a commit made with it is rejected. The
+      # repository's bot app is on the list instead, so an installation token for it is minted here and used below.
+      - uses: actions/create-github-app-token@v3
+        id: bot
+        with:
+          app-id: ${{ secrets.GH_BOT_APPID }}
+          private-key: ${{ secrets.GH_BOT_PRIVATE_KEY }}
+
       - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v6
@@ -71,7 +81,7 @@ jobs:
       # dropping that push.
       - name: Commit only when the generated text changed
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
           REPOSITORY: ${{ github.repository }}
           BRANCH: ${{ github.ref_name }}
         run: |
