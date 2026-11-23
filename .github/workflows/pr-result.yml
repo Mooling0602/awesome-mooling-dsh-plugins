@@ -24,8 +24,11 @@ permissions:
 jobs:
   comment:
     # Only the check workflow's reports are rendered. A run from a fork reports here too, and the pull request it belongs
-    # to is reachable from the run's own metadata.
-    if: github.event.workflow_run.event == 'pull_request_target'
+    # to is reachable from the run's own metadata. A `/recheck` run arrives the same way, carrying `issue_comment` as its
+    # event, and is reported on all the same: the person who asked for the run is waiting for its result.
+    if: >-
+      github.event.workflow_run.event == 'pull_request_target' ||
+      github.event.workflow_run.event == 'issue_comment'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -54,6 +57,14 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           number=$(jq -r '.workflow_run.pull_requests[0].number // empty' "$GITHUB_EVENT_PATH")
+          # A `/recheck` run is identified by the name the check job gave it, before anything else is tried. Its
+          # `head_sha` is the tip of `main` rather than the pull request's head, because that is what the comment event
+          # checked out, so the commit lookup below would match whatever pull request happens to point at `main` instead
+          # of the one the comment asked about. Reading the name first is what keeps this from reporting on the wrong
+          # pull request, which is worse than reporting on none.
+          if [ -z "$number" ] && [ "$(jq -r '.workflow_run.event' "$GITHUB_EVENT_PATH")" = "issue_comment" ]; then
+            number=$(jq -r '.workflow_run.display_title // empty | capture("^PR #(?<n>[0-9]+)$").n' "$GITHUB_EVENT_PATH" 2>/dev/null || true)
+          fi
           if [ -z "$number" ]; then
             # A run started from a fork reports no pull request on the run itself, which is the usual case for the
             # contributions this repository accepts. The head commit identifies it instead: the open pull request whose
@@ -63,6 +74,15 @@ jobs:
           fi
           if [ -z "$number" ]; then
             echo "No open pull request for this run; nothing to report."
+            exit 0
+          fi
+          # A comment on an ordinary issue carries that issue's number in the run name, and the check job is skipped for
+          # it because there is no pull request to judge. Issues and pull requests share one number space, so a pull
+          # request with the same number usually does exist and would otherwise receive this comment about a run that
+          # never checked it. Asking for the number as a pull request is what distinguishes the two: the request 404s for
+          # an issue, and a 404 here means there is nothing to report.
+          if ! gh api "repos/$REPOSITORY/pulls/$number" > /dev/null 2>&1; then
+            echo "#$number is not a pull request; nothing to report."
             exit 0
           fi
           echo "number=$number" >> "$GITHUB_OUTPUT"
