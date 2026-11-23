@@ -47,8 +47,15 @@ jobs:
     name: Check
     runs-on: ubuntu-latest
     steps:
-      # The base commit, checked out at the workspace root. Everything that runs comes from here: the scripts, the
-      # configuration, the type definitions, and the tests. A pull request cannot alter any of it.
+      # The default branch as it stands right now, checked out at the workspace root. Everything that runs comes from
+      # here: the scripts, the configuration, the type definitions, and the tests. A pull request cannot alter any of it.
+      #
+      # `github.sha` rather than `github.event.pull_request.base.sha`, and the difference is the whole point. Under
+      # `pull_request_target` the former is the tip of the default branch at run time, which is the newest rule that
+      # exists. The latter is the commit the pull request was opened against, which stops moving the moment the pull
+      # request is opened: a submission reviewed a week later would still be judged by the code of a week ago, and a fix
+      # pushed to `main` in between would not be in effect until the contributor updated their branch. Using `base.sha`
+      # here would reintroduce exactly the staleness this trigger was adopted to remove.
       #
       # `fetch-depth: 0` fetches the whole history rather than a single commit, because the checker has to find the point
       # where the pull request branched off. A depth-1 checkout of each side leaves two commits with no shared ancestry,
@@ -57,7 +64,7 @@ jobs:
       # here are small and the filter below skips the file contents anyway, so full history costs little.
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           filter: blob:none
 
