@@ -54,8 +54,13 @@ jobs:
       #
       # The checker is run from the base commit's own tree, not from the checked-out one. `HEAD` is the merge commit, so
       # its `src/contrib/check.ts` is whatever the pull request supplied: a submission that rewrote the checker would be
-      # judged by the checker it replaced. Unpacking the base commit into a temporary directory means the rules that apply
-      # are always the ones on the base branch, whatever the pull request contains.
+      # judged by the checker it replaced. Unpacking the base commit into a subdirectory of the workspace means the rules
+      # that apply are always the ones on the base branch, whatever the pull request contains.
+      #
+      # The unpacked tree sits inside the workspace rather than in `$RUNNER_TEMP`: the checker shells out to `git`, and it
+      # reads the submitted `plugin.yml` through a path relative to the current directory, so it has to run where the
+      # checkout is. It is added to `.git/info/exclude` first, because otherwise the copy of the repository would show up
+      # as added files and every submission would look like it touched the whole tree.
       #
       # `--target` is passed because a plugin submission may only target `main`; the check rejects one aimed elsewhere
       # rather than letting it through to a merge that could never publish.
@@ -65,9 +70,10 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
-          mkdir -p "$RUNNER_TEMP/checker"
-          git archive "$BASE_SHA" | tar -x -C "$RUNNER_TEMP/checker"
-          node "$RUNNER_TEMP/checker/src/contrib/check.ts" --base "$BASE_SHA" --head HEAD --target "$BASE_REF"
+          echo '.checker/' >> .git/info/exclude
+          mkdir -p .checker
+          git archive "$BASE_SHA" | tar -x -C .checker
+          node .checker/src/contrib/check.ts --base "$BASE_SHA" --head HEAD --target "$BASE_REF"
 
       # The registry data is built first because the index is read from these packuments and the worker imports the
       # index, so `pnpm check` cannot type-check the worker until both exist. This is the same order `registry.yml` uses
