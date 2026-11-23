@@ -38,11 +38,14 @@ jobs:
         with:
           node-version: 24
 
+      # The endpoint answers with `{ total_count, jobs: [...] }`, and only the array is wanted. `--jq` unwraps it here so
+      # the renderer receives the list it expects; writing the whole response would give it an object, and reading a run
+      # that had not yet produced a job would fail on the first step of the report rather than reporting nothing.
       - name: Read the run's steps
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUN_ID: ${{ github.event.workflow_run.id }}
-        run: gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID/jobs" > "$RUNNER_TEMP/jobs.json"
+        run: gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID/jobs" --jq '.jobs' > "$RUNNER_TEMP/jobs.json"
 
       - name: Read the pull request
         id: pr

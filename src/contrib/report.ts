@@ -221,6 +221,24 @@ function arg(flag: string, fallback: string): string {
   return process.argv[index + 1] ?? fallback
 }
 
+/**
+ * Read a jobs payload, accepting either shape GitHub hands out.
+ *
+ * The jobs endpoint answers with `{ total_count, jobs: [...] }` while the list itself is what the rows are built from.
+ * The workflow unwraps it with `--jq '.jobs'`, and this accepts the wrapped form too: the failure it prevents is a
+ * `jobs is not iterable` crash after a successful run, which is the worst moment to lose the report.
+ * @param text - the file contents.
+ * @returns the job list.
+ */
+export function jobsOf(text: string): Job[] {
+  const parsed: unknown = JSON.parse(text)
+  if (Array.isArray(parsed)) return parsed as Job[]
+  if (typeof parsed === 'object' && parsed !== null && Array.isArray((parsed as { jobs?: unknown }).jobs)) {
+    return (parsed as { jobs: Job[] }).jobs
+  }
+  return []
+}
+
 if (invokedDirectly()) {
   const path = arg('--jobs', '')
   if (path === '') {
@@ -235,6 +253,5 @@ if (invokedDirectly()) {
     console.error(`Nothing to report for a ${conclusion} run on a ${draft ? 'draft' : 'ready'} pull request.`)
     process.exit(0)
   }
-  const jobs = JSON.parse(readFileSync(path, 'utf8')) as Job[]
-  process.stdout.write(render({ conclusion, jobs }))
+  process.stdout.write(render({ conclusion, jobs: jobsOf(readFileSync(path, 'utf8')) }))
 }

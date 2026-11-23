@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { MARKER, render, resultOf, rowsOf, shouldPost, type Job } from './report.ts'
+import { jobsOf, MARKER, render, resultOf, rowsOf, shouldPost, type Job } from './report.ts'
 
 /** A job whose steps all passed, named as `pr.yml` names them. */
 const PASSING: Job[] = [
@@ -197,4 +197,30 @@ test('the silent branch keeps stdout empty so the caller can treat it as nothing
     })
     assert.equal(stdout, '', `${conclusion}/${draft}`)
   }
+})
+
+test('jobsOf reads a bare list of jobs', () => {
+  assert.deepEqual(jobsOf('[{"steps":[{"name":"Dependencies","conclusion":"success"}]}]'), [
+    { steps: [{ name: 'Dependencies', conclusion: 'success' }] },
+  ])
+})
+
+test('jobsOf unwraps the shape the jobs endpoint returns', () => {
+  // `gh api .../jobs` answers `{ total_count, jobs }`. Reading only the array form crashed the report after a run that
+  // had already succeeded, which is the one moment the comment cannot be skipped.
+  const payload = '{"total_count":1,"jobs":[{"steps":[{"name":"Tests","conclusion":"success"}]}]}'
+  assert.deepEqual(jobsOf(payload), [{ steps: [{ name: 'Tests', conclusion: 'success' }] }])
+})
+
+test('jobsOf treats an unrecognised payload as no jobs', () => {
+  assert.deepEqual(jobsOf('null'), [])
+  assert.deepEqual(jobsOf('{}'), [])
+})
+
+test('jobsOf renders a passing report from the wrapped shape', () => {
+  const payload = JSON.stringify({
+    total_count: 1,
+    jobs: [{ steps: PASSING[0]?.steps ?? [] }],
+  })
+  assert.match(render({ conclusion: 'success', jobs: jobsOf(payload) }), /Checks passed/)
 })
