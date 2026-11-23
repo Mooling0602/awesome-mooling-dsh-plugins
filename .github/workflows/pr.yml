@@ -49,33 +49,42 @@ jobs:
     steps:
       # The base commit, checked out at the workspace root. Everything that runs comes from here: the scripts, the
       # configuration, the type definitions, and the tests. A pull request cannot alter any of it.
+      #
+      # `fetch-depth: 0` fetches the whole history rather than a single commit, because the checker has to find the point
+      # where the pull request branched off. A depth-1 checkout of each side leaves two commits with no shared ancestry,
+      # and `git merge-base` then answers with nothing while still exiting successfully: the branch point silently becomes
+      # the head, the diff comes out empty, and a real submission would be reported as touching no files. The repositories
+      # here are small and the filter below skips the file contents anyway, so full history costs little.
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          filter: blob:none
 
       # The pull request's own commits, kept in a subdirectory and used for exactly one thing: its `plugins/` tree, which
       # the step below copies over the base one. `allow-unsafe-pr-checkout` is required because this is a
       # `pull_request_target` run and the checkout action refuses untrusted code there by default. The flag is safe here
       # only because nothing in that directory is executed: it is read as YAML, and it is deleted before any build runs.
+      #
+      # The history is fetched for the same reason as above: the branch point is only discoverable once both sides share
+      # history, and the head is what the branch point is measured back from.
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           path: .pr
+          fetch-depth: 0
+          filter: blob:none
           allow-unsafe-pr-checkout: true
 
       # The head tree exists only as a git object for the checker to read the submitted `plugin.yml` from, and only as a
       # source of `plugins/`. The working copy of the head is removed so that the build, the type check and the tests
       # below run against files that came from `main`: a submission that added a test, a dependency or a source file
       # would otherwise be silently included in its own judgement.
-      # The head commit is fetched by SHA before its working copy is discarded. The checker reads the submitted
-      # `plugin.yml` out of the commit rather than off disk, so the object has to survive the cleanup below; fetching it
-      # into a ref is what keeps it reachable. GitHub serves a pull request's head by SHA even when it lives only in a
-      # fork, which is the case a plain `git fetch` of the branch could not serve.
+      #
+      # The objects stay reachable because the branch point ties them together: `origin/main` and the fetched head are
+      # now two tips within one repository, so removing the working copy no longer strands the commits.
       - name: Keep only the submitted plugins
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          git fetch --no-tags --depth=1 origin "$HEAD_SHA"
           rm -rf plugins
           cp -r .pr/plugins .
           rm -rf .pr

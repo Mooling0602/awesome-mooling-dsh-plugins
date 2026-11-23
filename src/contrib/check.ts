@@ -143,19 +143,50 @@ export function checkMetadata(path: string, commit = 'HEAD'): string[] {
 }
 
 /**
+ * Find the commit a pull request branched from.
+ *
+ * A pull request is judged on what it *added*, not on how the two branches currently differ. Those are the same question
+ * only while the base branch has not moved: once anything lands on `main`, a plain `git diff base head` also reports the
+ * base branch's own newer commits as though the pull request had reverted them. A submission opened last week against a
+ * `check.ts` that has since changed would be told it modified `check.ts`, and rejected for touching more than one file.
+ *
+ * The branch point is therefore the comparison point, which is what `git merge-base` computes. It needs the history the
+ * two commits share, so a run that fetched only the two endpoint commits cannot resolve it; that is why the workflow
+ * checks out real history rather than a single depth-1 commit per side.
+ * @param base - the commit the pull request would merge into.
+ * @param head - the commit under review.
+ * @returns the merge base, or `head` itself when the histories are unrelated.
+ * @throws when git cannot be run, which is a broken checkout rather than a rejected pull request.
+ */
+export function branchPoint(base: string, head: string): string {
+  let found = ''
+  try {
+    found = execFileSync('git', ['merge-base', base, head], { encoding: 'utf8' }).trim()
+  } catch {
+    // Unrelated histories have no branch point; git exits non-zero and nothing is printed.
+    found = ''
+  }
+  // A shallow clone is the case worth guarding: with only the two endpoint commits present there is no shared history to
+  // walk, and git can answer with nothing *and* exit successfully. Passing that emptiness on would fail later as an
+  // unrelated "ambiguous argument" error, so it is treated as the same absence as a non-zero exit.
+  return found === '' ? head : found
+}
+
+/**
  * Read the files a diff touched.
  *
- * Two endpoints are compared directly, as `git diff base head`. The three-dot form `base...head` is not used: it needs a
- * merge base, and a shallow CI checkout of a pull request's merge commit has none in common with a shallow fetch of the
- * base branch, so it fails with `no merge base` before any file is read. Comparing the two trees works with no shared
- * ancestry, which is exactly the situation a pull request run is in.
+ * The comparison runs from the branch point to the head, not from the base tip to the head. A pull request carries only
+ * its own commits, and once the base branch moves on, `git diff base head` counts the base branch's newer commits as
+ * changes the pull request made. Anchoring at the branch point describes the contribution instead of the divergence.
  * @param base - the commit the pull request would merge into.
  * @param head - the commit under review.
  * @returns one entry per file.
  * @throws when git cannot be run, which is a broken checkout rather than a rejected pull request.
  */
 export function changedFiles(base: string, head: string): Changed[] {
-  const output = execFileSync('git', ['diff', '--name-status', '--no-renames', base, head], { encoding: 'utf8' })
+  const output = execFileSync('git', ['diff', '--name-status', '--no-renames', branchPoint(base, head), head], {
+    encoding: 'utf8',
+  })
   return output
     .split('\n')
     .filter(line => line !== '')
@@ -168,9 +199,10 @@ export function changedFiles(base: string, head: string): Changed[] {
 /**
  * Read the commit subjects a pull request carries.
  *
- * The subjects are read from the head's own history back to the base, which `git log base..head` expresses without
- * needing a merge base: it walks what `head` reaches that `base` does not, and a shallow checkout satisfies that as long
- * as both endpoints are present.
+ * The subjects are read from the head's own history back to the base, which `git log base..head` expresses as "what
+ * `head` reaches that `base` does not". That is already the pull request's own contribution, so unlike the diff below it
+ * needs no branch point: commits that only the base branch has are excluded by construction, and commits the base branch
+ * gained after the pull request was opened are equally irrelevant to what the pull request said.
  * @param base - the commit the pull request would merge into.
  * @param head - the commit under review.
  * @returns every subject, oldest first.

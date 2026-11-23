@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { check, checkBase, checkDiff, checkMetadata, checkSubject, isSubmission, type Changed } from './check.ts'
+import { check, checkBase, checkDiff, checkMetadata, checkSubject, isSubmission, branchPoint, changedFiles, type Changed } from './check.ts'
 
 /** One added metadata file at its correct path. */
 const GOOD: Changed[] = [{ status: 'A', path: 'plugins/by-name/dsh-hi/dsh-hint-shell/plugin.yml' }]
@@ -327,4 +327,76 @@ test('check ignores the branch for an ordinary pull request', () => {
 
 test('check does not check the branch when none is given', () => {
   assert.deepEqual(check(['feat: add a plugin'], GOOD), [])
+})
+
+test('changedFiles reports what the pull request added once the base branch has moved on', () => {
+  // A pull request opened against an older `main` carries one commit, but the base branch has since gained a commit of
+  // its own. Comparing the two tips would report the base branch's newer file as a change the pull request made; the
+  // contribution is what the pull request itself committed.
+  const root = mkdtempSync(join(tmpdir(), 'contrib-check-'))
+  const run = (args: string[]): string =>
+    execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: 'pipe' })
+  const write = (path: string, text: string): void => {
+    const full = join(root, path)
+    mkdirSync(join(full, '..'), { recursive: true })
+    writeFileSync(full, text)
+  }
+  const commit = (message: string): void => {
+    run(['-c', 'user.email=test@example.com', '-c', 'user.name=test', 'add', '--all'])
+    run(['-c', 'user.email=test@example.com', '-c', 'user.name=test', 'commit', '--quiet', '--message', message])
+  }
+  run(['init', '--quiet', '--initial-branch', 'main'])
+  write('src/worker.ts', 'before\n')
+  commit('initial')
+  const fork = run(['rev-parse', 'HEAD']).trim()
+
+  // The pull request branches off, adding one metadata file.
+  run(['checkout', '--quiet', '-b', 'submission'])
+  write('plugins/by-name/dsh-hi/dsh-hint-shell/plugin.yml', VALID_YML)
+  commit('feat: add a plugin')
+  const head = run(['rev-parse', 'HEAD']).trim()
+
+  // Meanwhile main gains its own commit touching a different file.
+  run(['checkout', '--quiet', 'main'])
+  write('src/worker.ts', 'after\n')
+  commit('fix: change the worker')
+  const base = run(['rev-parse', 'HEAD']).trim()
+
+  try {
+    assert.notEqual(base, fork)
+    // `changedFiles` runs git in the current directory, which in CI is the checkout it was started in.
+    const previous = process.cwd()
+    process.chdir(root)
+    try {
+      assert.deepEqual(changedFiles(base, head), [
+        { status: 'A', path: 'plugins/by-name/dsh-hi/dsh-hint-shell/plugin.yml' },
+      ])
+    } finally {
+      process.chdir(previous)
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('branchPoint falls back to the head when the histories are unrelated', () => {
+  // Two independent roots share no ancestry. The comparison must not crash; it reports an empty contribution instead.
+  const root = mkdtempSync(join(tmpdir(), 'contrib-check-'))
+  const run = (args: string[]): string =>
+    execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: 'pipe' })
+  const commitFile = (branch: string, name: string): string => {
+    run(['checkout', '--quiet', '--orphan', branch])
+    writeFileSync(join(root, name), `${name}\n`)
+    run(['-c', 'user.email=test@example.com', '-c', 'user.name=test', 'add', '--all'])
+    run(['-c', 'user.email=test@example.com', '-c', 'user.name=test', 'commit', '--quiet', '--message', name])
+    return run(['rev-parse', 'HEAD']).trim()
+  }
+  run(['init', '--quiet', '--initial-branch', 'main'])
+  const one = commitFile('main', 'one.txt')
+  const two = commitFile('other', 'two.txt')
+  try {
+    assert.equal(branchPoint(one, two), two)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
