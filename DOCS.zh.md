@@ -12,7 +12,35 @@ https://mynpm.staringplanet.top/dsh-plugins/index.json
 
 完成后将会显示推荐的插件列表到你的 DSH 中。你仍可以通过其他索引源或添加插件入口安装不在本仓库索引范围内的插件。
 
-下面介绍本仓库要求的插件元数据规范，以及解析细则。
+下一节介绍混用不同安装源时的处理方法，后文介绍本仓库要求的插件元数据规范和索引构建流程。
+
+## 与其他源的插件混用
+
+pnpm 报 `ERR_PNPM_FETCH_404` 时，先核对报错中的**包名**和**源地址**。如果报错指向一个已安装、只在 mynpm 上提供的包，但请求发到了公共 npm 源或镜像，说明 pnpm 查错了已有依赖的来源。出错的包不一定是你这次要安装的插件。[DSH 讨论 #14213](https://github.com/deepseek-ai/deepseek-harness/discussions/14213) 就是在安装 GitHub 插件时遇到了这个问题：索引正确声明了已有插件的 mynpm 来源，但 DSH 配置中只保存了 `^0.1.1` 之类不带来源的依赖版本。换 GitHub 插件的地址解决不了这次查源。
+
+1. 在受影响的 **DSH 配置目录**（包含该配置的 `package.json` 和 `pnpm-lock.yaml`）中运行 `pnpm --version`。完整迁移已在 Termux 的 pnpm 12.15.0 上验证，命名源解析也在 pnpm 12.18.0 上验证过。先备份该目录的 `package.json`、`pnpm-lock.yaml` 和已有的 `pnpm-workspace.yaml`，并记下当前安装的版本。
+
+2. 如果还没有 `pnpm-workspace.yaml` 就在该目录创建；如果已有，就把下方条目合并到现有的 `registries` 映射中。保留其他设置，不要改默认 registry。详见 [pnpm 包来源文档](https://pnpm.io/package-sources)。
+
+   ```yaml
+   registries:
+     https://mynpm.staringplanet.top/:
+       prefix: mynpm
+   ```
+
+3. 用 `包名@mynpm:版本` 重新添加受影响的包。如果公共镜像仍返回 404，先手动卸载报错中列出的已安装 mynpm 包，或在该配置目录执行 `pnpm remove <package>`，再用带前缀的写法添加。如果有多个未加前缀的 mynpm 包互相阻塞，可以用一条 `pnpm remove` 命令将它们一起移除，再逐一添加。这个步骤会暂时卸载这些包，不要把公共 npm 包或 GitHub 插件也移除。下面以两个已知版本为例：
+
+   ```sh
+   pnpm remove dsh-web-file-uploader dsh-hint-shell
+   pnpm add dsh-hint-shell@mynpm:0.1.1 --save-exact
+   pnpm add dsh-web-file-uploader@mynpm:1.0.0-rc.3 --save-exact
+   ```
+
+   请使用你要安装的版本。如果要让 pnpm 从 mynpm 选择版本，可以用 `pnpm add dsh-web-file-uploader@mynpm: --save-exact`。省略版本时冒号也不能省：`包名@mynpm` 不会选择命名源，`mynpm:包名@版本` 也不是这里验证过的命令写法。
+
+4. 检查 `package.json` 中相关依赖是否变成 `mynpm:<版本>`，并核对 `pnpm-lock.yaml` 中对应条目是否带有 `@mynpm:`。然后重试此前报 404 的操作。如果请求仍发到了公共源，确认你在正确的配置目录中操作，并检查是否还有未加前缀的 mynpm 独有依赖。
+
+这是本地缓解方法，不会改变 DSH 本身记录来源的方式。之后通过插件市场安装或更新时，可以再确认 DSH 没有把带前缀的依赖改回普通版本。没有遇到这个问题的配置不必修改。
 
 ## 插件元数据格式
 

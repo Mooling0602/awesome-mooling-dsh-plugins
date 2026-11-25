@@ -12,7 +12,35 @@ https://mynpm.staringplanet.top/dsh-plugins/index.json
 
 Once that is done, the list of recommended plugins appears in your DSH. You can still install plugins outside this repository's index through other index sources or the add-plugin entry.
 
-The rest of this document describes the plugin metadata format this repository requires, and the parsing rules behind it.
+The next section explains how to handle mixed registries. The rest of this document describes the metadata format and how the registry is built.
+
+## Using mynpm alongside other registries
+
+When a pnpm operation fails with `ERR_PNPM_FETCH_404`, check both the **package name** and the **registry URL** in the error. If the error names an already-installed mynpm-only package but the URL is a public npm registry or mirror, pnpm is resolving an existing dependency from the wrong source. It may name a different package from the one you were trying to install. In the case reported in [DSH discussion #14213](https://github.com/deepseek-ai/deepseek-harness/discussions/14213), installing a GitHub plugin exposed this problem: the index supplied the correct source for the existing mynpm plugin, but the profile saved a plain dependency such as `^0.1.1`, without its registry. Changing the GitHub plugin URL would not fix that lookup.
+
+1. In the affected **DSH profile directory** (the one containing the profile’s `package.json` and `pnpm-lock.yaml`), run `pnpm --version`. This workaround was verified with pnpm 12.15.0 on Termux and the named-registry resolution was also checked with pnpm 12.18.0. Back up the profile’s `package.json`, `pnpm-lock.yaml`, and `pnpm-workspace.yaml` if it exists, and note the versions currently installed.
+
+2. Create `pnpm-workspace.yaml` there if absent, or merge the entry below into the existing `registries` mapping. Keep the other settings and do not change the default registry. See [pnpm package sources](https://pnpm.io/package-sources) for named registries.
+
+   ```yaml
+   registries:
+     https://mynpm.staringplanet.top/:
+       prefix: mynpm
+   ```
+
+3. Re-add each affected mynpm package as `package@mynpm:version`. If the public mirror still returns a 404, manually uninstall the existing mynpm package named in the error, or run `pnpm remove <package>` in the affected profile directory, then re-add it with the prefix. If several unprefixed mynpm packages block one another, remove them together in a single `pnpm remove` command before re-adding them one at a time. This temporarily uninstalls those packages; do not include public npm packages or GitHub plugins. For example, this is the migration for two known versions of the affected packages:
+
+   ```sh
+   pnpm remove dsh-web-file-uploader dsh-hint-shell
+   pnpm add dsh-hint-shell@mynpm:0.1.1 --save-exact
+   pnpm add dsh-web-file-uploader@mynpm:1.0.0-rc.3 --save-exact
+   ```
+
+   Use the versions you intend to install. To let pnpm choose the version from mynpm, use `pnpm add dsh-web-file-uploader@mynpm: --save-exact`. The colon still matters: `package@mynpm` is not a named-registry request, and `mynpm:package@version` is not the command form verified here.
+
+4. Check that the affected entries in `package.json` now read `mynpm:<version>` and that the corresponding entries in `pnpm-lock.yaml` include `@mynpm:`. Retry the operation that produced the 404. If the package is still requested from a public registry, check that you are operating in the right profile and that no other mynpm-only dependencies still lack the prefix.
+
+This is a local workaround, not a change to how DSH records sources. After a later install or update through the market, check that DSH has not replaced the prefixed entry with a plain version again. Profiles that do not have this problem need no change.
 
 ## Plugin metadata format
 

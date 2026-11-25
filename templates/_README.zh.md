@@ -43,6 +43,20 @@ https://mynpm.staringplanet.top/dsh-plugins/index.json
 >
 > 对于普通用户，也推荐安装 [dsh-better-plugin-updater](https://github.com/Mooling0602/dsh-better-plugin-updater) 方便管理不受 DSH 插件包更新系统支持的插件（比如 GitHub 源）。
 
+### 与其他源的插件混用
+
+如果 pnpm 操作把已安装的 mynpm 独有插件发往公共镜像查询并报 404，可以为该包指定命名源，无需更改默认 registry。在受影响的 DSH 配置目录中，将以下条目合并到 `pnpm-workspace.yaml`：
+
+```yaml
+registries:
+  https://mynpm.staringplanet.top/:
+    prefix: mynpm
+```
+
+在该目录执行 `pnpm add dsh-hint-shell@mynpm:0.1.1 --save-exact`，即可为该包记录来源。若插件已安装但没有来源前缀，请先阅读[已有插件迁移说明](DOCS.zh.md#与其他源的插件混用)。
+
+如果仍然出错，需要手动卸载，或使用 `pnpm remove <package>` 先移除掉镜像源出错的包。
+
 下面的内容是完整的推荐插件列表，将会由 CI 自动生成，并自动提交到仓库。
 
 <!-- Plugin list data, let CI to auto generate them. -->
