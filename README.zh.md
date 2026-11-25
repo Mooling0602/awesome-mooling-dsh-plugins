@@ -43,10 +43,24 @@ https://mynpm.staringplanet.top/dsh-plugins/index.json
 >
 > 对于普通用户，也推荐安装 [dsh-better-plugin-updater](https://github.com/Mooling0602/dsh-better-plugin-updater) 方便管理不受 DSH 插件包更新系统支持的插件（比如 GitHub 源）。
 
+### 与其他源的插件混用
+
+如果 pnpm 操作把已安装的 mynpm 独有插件发往公共镜像查询并报 404，可以为该包指定命名源，无需更改默认 registry。在受影响的 DSH 配置目录中，将以下条目合并到 `pnpm-workspace.yaml`：
+
+```yaml
+registries:
+  https://mynpm.staringplanet.top/:
+    prefix: mynpm
+```
+
+在该目录执行 `pnpm add dsh-hint-shell@mynpm:0.1.1 --save-exact`，即可为该包记录来源。若插件已安装但没有来源前缀，请先阅读[已有插件迁移说明](DOCS.zh.md#与其他源的插件混用)。
+
+如果仍然出错，需要手动卸载，或使用 `pnpm remove <package>` 先移除掉镜像源出错的包。
+
 下面的内容是完整的推荐插件列表，将会由 CI 自动生成，并自动提交到仓库。
 
 - [dsh-better-plugin-updater](https://github.com/Mooling0602/dsh-better-plugin-updater)（[中文](https://github.com/Mooling0602/dsh-better-plugin-updater/blob/main/README.zh.md)）
-  ![](https://img.shields.io/badge/version-v0.1.2-blue) ![](https://img.shields.io/badge/ci-passing-brightgreen) ![](https://img.shields.io/badge/license-MIT-blue) ![](https://img.shields.io/badge/dsh-%3E%3D0.2.1--rc.4_%3C0.3.0-4D6BFE)
+  ![](https://img.shields.io/badge/version-v0.1.3-blue) ![](https://img.shields.io/badge/ci-passing-brightgreen) ![](https://img.shields.io/badge/license-MIT-blue) ![](https://img.shields.io/badge/dsh-%3E%3D0.2.3--alpha.2_%3C0.3.0--0-4D6BFE)
 
 - [dsh-bili-danmaku-overlay](https://github.com/Mooling0602/dsh-bili-danmaku-overlay)（[中文](https://github.com/Mooling0602/dsh-bili-danmaku-overlay/blob/main/README.md)）
   ![](https://img.shields.io/badge/version-v1.1.0-blue) ![](https://img.shields.io/badge/license-MIT-blue) ![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)
